@@ -209,7 +209,9 @@ pub enum Output {
 
     // TODO: Consider a CancelSendDnsQuery.
     /// Cancel a connection attempt
-    CancelConnection(SocketAddr),
+    CancelConnection {
+        id: Id,
+    },
 
     /// Connection attempt succeeded
     Succeeded,
@@ -239,6 +241,7 @@ pub enum DnsRecordType {
 pub struct ServiceInfo {
     pub priority: u16,
     pub target_name: TargetName,
+    // TODO: Should handle ordering? HashSet looses ordering.
     pub alpn_protocols: HashSet<HttpVersion>,
     pub ech_config: Option<Vec<u8>>,
     pub ipv4_hints: Vec<Ipv4Addr>,
@@ -912,9 +915,9 @@ impl HappyEyeballs {
             .iter_mut()
             .find(|a| a.state == ConnectionState::InProgress)
         {
-            let address = attempt.endpoint.address;
+            let id = attempt.id;
             attempt.state = ConnectionState::Failed;
-            return Some(Output::CancelConnection(address));
+            return Some(Output::CancelConnection { id });
         }
 
         // All connections have been canceled, return Succeeded
