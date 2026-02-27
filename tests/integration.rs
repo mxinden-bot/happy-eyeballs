@@ -1,6 +1,6 @@
 use std::{
     collections::HashSet,
-    net::{Ipv4Addr, Ipv6Addr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     time::Instant,
 };
 
@@ -12,14 +12,17 @@ use happy_eyeballs::{
 
 const HOSTNAME: &str = "example.com";
 const PORT: u16 = 443;
+const CUSTOM_PORT: u16 = 8443;
 const V6_ADDR: Ipv6Addr = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1);
 const V6_ADDR_2: Ipv6Addr = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 2);
 const V6_ADDR_3: Ipv6Addr = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 3);
 const V4_ADDR: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 1);
+const V4_ADDR_2: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 2);
 const ECH_CONFIG: &[u8] = &[1, 2, 3, 4, 5];
 
 trait HappyEyeballsExt {
     fn expect(&mut self, input_output: Vec<(Option<Input>, Option<Output>)>, now: Instant);
+    fn expect_connection_attempts(&mut self, now: &mut Instant, connections: Vec<Output>);
 }
 
 impl HappyEyeballsExt for HappyEyeballs {
@@ -31,6 +34,21 @@ impl HappyEyeballsExt for HappyEyeballs {
             let output = self.process_output(now);
             assert_eq!(expected_output, output);
         }
+    }
+
+    fn expect_connection_attempts(&mut self, now: &mut Instant, connections: Vec<Output>) {
+        for conn in connections {
+            *now += CONNECTION_ATTEMPT_DELAY;
+            self.expect(
+                vec![
+                    (None, Some(conn)),
+                    (None, Some(out_connection_attempt_delay())),
+                ],
+                *now,
+            );
+        }
+        *now += CONNECTION_ATTEMPT_DELAY;
+        self.expect(vec![(None, None)], *now);
     }
 }
 
@@ -44,6 +62,7 @@ fn in_dns_https_positive(id: Id) -> Input {
             ipv6_hints: vec![],
             ipv4_hints: vec![],
             ech_config: None,
+            port: None,
         }])),
     }
 }
@@ -58,6 +77,7 @@ fn in_dns_https_positive_no_alpn(id: Id) -> Input {
             ipv6_hints: vec![],
             ipv4_hints: vec![],
             ech_config: None,
+            port: None,
         }])),
     }
 }
@@ -72,6 +92,7 @@ fn in_dns_https_positive_h2_h3(id: Id) -> Input {
             ipv6_hints: vec![],
             ipv4_hints: vec![],
             ech_config: None,
+            port: None,
         }])),
     }
 }
@@ -86,6 +107,7 @@ fn in_dns_https_positive_v6_hints(id: Id) -> Input {
             ipv6_hints: vec![Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1)],
             ipv4_hints: vec![],
             ech_config: None,
+            port: None,
         }])),
     }
 }
@@ -100,6 +122,7 @@ fn in_dns_https_positive_svc1(id: Id) -> Input {
             ipv6_hints: vec![Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 2)],
             ipv4_hints: vec![],
             ech_config: None,
+            port: None,
         }])),
     }
 }
@@ -215,6 +238,17 @@ fn out_attempt_v6_h3(id: Id) -> Output {
     }
 }
 
+fn out_attempt_v6_h3_custom_port(id: Id) -> Output {
+    Output::AttemptConnection {
+        id,
+        endpoint: Endpoint {
+            address: SocketAddr::new(V6_ADDR.into(), CUSTOM_PORT),
+            protocol: ConnectionAttemptHttpVersions::H3,
+            ech_config: None,
+        },
+    }
+}
+
 fn out_attempt_v4_h1_h2(id: Id) -> Output {
     Output::AttemptConnection {
         id,
@@ -243,6 +277,39 @@ fn out_attempt_v4_h3(id: Id) -> Output {
         endpoint: Endpoint {
             address: SocketAddr::new(V4_ADDR.into(), PORT),
             protocol: ConnectionAttemptHttpVersions::H3,
+            ech_config: None,
+        },
+    }
+}
+
+fn out_attempt_v4_h3_custom_port(id: Id) -> Output {
+    Output::AttemptConnection {
+        id,
+        endpoint: Endpoint {
+            address: SocketAddr::new(V4_ADDR.into(), CUSTOM_PORT),
+            protocol: ConnectionAttemptHttpVersions::H3,
+            ech_config: None,
+        },
+    }
+}
+
+fn out_attempt_v6_h2_custom_port(id: Id) -> Output {
+    Output::AttemptConnection {
+        id,
+        endpoint: Endpoint {
+            address: SocketAddr::new(V6_ADDR.into(), CUSTOM_PORT),
+            protocol: ConnectionAttemptHttpVersions::H2,
+            ech_config: None,
+        },
+    }
+}
+
+fn out_attempt_v4_h2_custom_port(id: Id) -> Output {
+    Output::AttemptConnection {
+        id,
+        endpoint: Endpoint {
+            address: SocketAddr::new(V4_ADDR.into(), CUSTOM_PORT),
+            protocol: ConnectionAttemptHttpVersions::H2,
             ech_config: None,
         },
     }
@@ -1051,6 +1118,7 @@ fn ech_config_propagated_to_endpoint() {
                         ipv6_hints: vec![V6_ADDR],
                         ipv4_hints: vec![],
                         ech_config: Some(ECH_CONFIG.to_vec()),
+                        port: None,
                     }])),
                 }),
                 Some(Output::AttemptConnection {
@@ -1086,6 +1154,7 @@ fn ech_config_from_https_applies_to_aaaa() {
                         ipv6_hints: vec![],
                         ipv4_hints: vec![],
                         ech_config: Some(ECH_CONFIG.to_vec()),
+                        port: None,
                     }])),
                 }),
                 Some(out_resolution_delay()),
@@ -1124,7 +1193,14 @@ fn multiple_target_names() {
             // Getting a positive AAAA for the main host
             (
                 Some(in_dns_aaaa_positive(Id::from(1))),
-                Some(out_attempt_v6_h3(Id::from(4))),
+                Some(Output::AttemptConnection {
+                    id: Id::from(4),
+                    endpoint: Endpoint {
+                        address: SocketAddr::new(V6_ADDR_2.into(), PORT),
+                        protocol: ConnectionAttemptHttpVersions::H3,
+                        ech_config: None,
+                    },
+                }),
             ),
         ],
         now,
@@ -1162,6 +1238,272 @@ fn alt_svc_used_immediately() {
             ),
         ],
         now,
+    );
+}
+
+mod https_port_svcparam_overrides_port_for {
+    use super::*;
+
+    fn check(ipv4_hints: Vec<Ipv4Addr>) {
+        let (now, mut he) = setup(); // constructed with PORT (443)
+
+        he.expect(
+            vec![
+                (None, Some(out_send_dns_https(Id::from(0)))),
+                (None, Some(out_send_dns_aaaa(Id::from(1)))),
+                (None, Some(out_send_dns_a(Id::from(2)))),
+                (
+                    Some(in_dns_aaaa_negative(Id::from(1))),
+                    Some(out_resolution_delay()),
+                ),
+                (
+                    Some(in_dns_a_negative(Id::from(2))),
+                    Some(out_resolution_delay()),
+                ),
+                // HTTPS record carries port=8443; the connection attempt must use
+                // 8443, not the authority port 443. IPv6 is preferred.
+                (
+                    Some(Input::DnsResult {
+                        id: Id::from(0),
+                        result: DnsResult::Https(Ok(vec![happy_eyeballs::ServiceInfo {
+                            priority: 1,
+                            target_name: HOSTNAME.into(),
+                            alpn_protocols: HashSet::from([HttpVersion::H3, HttpVersion::H2]),
+                            ipv6_hints: vec![V6_ADDR],
+                            ipv4_hints,
+                            ech_config: None,
+                            port: Some(CUSTOM_PORT),
+                        }])),
+                    }),
+                    Some(out_attempt_v6_h3_custom_port(Id::from(3))),
+                ),
+            ],
+            now,
+        );
+    }
+
+    #[test]
+    fn v6_hints() {
+        check(vec![]);
+    }
+
+    /// HTTPS record with both IPv4 and IPv6 hints and a `port` SvcParam: both
+    /// families use the overridden port.
+    #[test]
+    fn v4_and_v6_hints() {
+        check(vec![V4_ADDR]);
+    }
+}
+
+#[test]
+fn https_port_svcparam_applies_to_resolved_a_and_aaaa() {
+    let (now, mut he) = setup(); // constructed with PORT (443)
+
+    he.expect(
+        vec![
+            (None, Some(out_send_dns_https(Id::from(0)))),
+            (None, Some(out_send_dns_aaaa(Id::from(1)))),
+            (None, Some(out_send_dns_a(Id::from(2)))),
+            // HTTPS record with port=8443, no hints
+            (
+                Some(Input::DnsResult {
+                    id: Id::from(0),
+                    result: DnsResult::Https(Ok(vec![happy_eyeballs::ServiceInfo {
+                        priority: 1,
+                        target_name: HOSTNAME.into(),
+                        alpn_protocols: HashSet::from([HttpVersion::H3, HttpVersion::H2]),
+                        ipv6_hints: vec![],
+                        ipv4_hints: vec![],
+                        ech_config: None,
+                        port: Some(CUSTOM_PORT),
+                    }])),
+                }),
+                Some(out_resolution_delay()),
+            ),
+            // Positive AAAA: connection attempt must use port 8443, not 443
+            (
+                Some(in_dns_aaaa_positive(Id::from(1))),
+                Some(out_attempt_v6_h3_custom_port(Id::from(3))),
+            ),
+            (
+                Some(in_dns_a_positive(Id::from(2))),
+                Some(out_connection_attempt_delay()),
+            ),
+            // Positive A: connection attempt must use port 8443, not 443
+            (
+                Some(in_connection_result_negative(Id::from(3))),
+                Some(out_attempt_v4_h3_custom_port(Id::from(4))),
+            ),
+        ],
+        now,
+    );
+}
+
+#[test]
+fn https_port_svcparam_applies_but_fallbacks_follow() {
+    let (mut now, mut he) = setup();
+
+    he.expect(
+        vec![
+            (None, Some(out_send_dns_https(Id::from(0)))),
+            (None, Some(out_send_dns_aaaa(Id::from(1)))),
+            (None, Some(out_send_dns_a(Id::from(2)))),
+            // HTTPS record with port=8443, no hints
+            (
+                Some(Input::DnsResult {
+                    id: Id::from(0),
+                    result: DnsResult::Https(Ok(vec![happy_eyeballs::ServiceInfo {
+                        priority: 1,
+                        target_name: HOSTNAME.into(),
+                        alpn_protocols: HashSet::from([HttpVersion::H3, HttpVersion::H2]),
+                        ipv6_hints: vec![],
+                        ipv4_hints: vec![],
+                        ech_config: None,
+                        port: Some(CUSTOM_PORT),
+                    }])),
+                }),
+                Some(out_resolution_delay()),
+            ),
+            // Positive AAAA: connection attempt must use port 8443, not 443
+            (
+                Some(in_dns_aaaa_positive(Id::from(1))),
+                Some(Output::AttemptConnection {
+                    id: Id::from(3),
+                    endpoint: Endpoint {
+                        address: SocketAddr::new(V6_ADDR.into(), CUSTOM_PORT),
+                        protocol: ConnectionAttemptHttpVersions::H3,
+                        ech_config: None,
+                    },
+                }),
+            ),
+            (
+                Some(in_dns_a_positive(Id::from(2))),
+                Some(out_connection_attempt_delay()),
+            ),
+        ],
+        now,
+    );
+
+    // Connection attempts using custom port: V6:H3, V4:H3, V6:H2, V4:H2, then
+    // fallback on port 443.
+    he.expect_connection_attempts(
+        &mut now,
+        vec![
+            out_attempt_v4_h3_custom_port(Id::from(4)),
+            out_attempt_v6_h2_custom_port(Id::from(5)),
+            out_attempt_v4_h2_custom_port(Id::from(6)),
+            out_attempt_v6_h3(Id::from(7)),
+            out_attempt_v4_h3(Id::from(8)),
+            out_attempt_v6_h2(Id::from(9)),
+            out_attempt_v4_h2(Id::from(10)),
+        ],
+    );
+}
+
+/// Two HTTPS ServiceInfo records with different priorities and `port` SvcParams.
+///
+/// ```dns
+/// example.com  HTTPS  1 . alpn="h2,h3" port=20007
+/// example.com  HTTPS  2 . alpn="h2,h3" port=20008
+/// ```
+///
+/// Connection attempts are grouped by port in priority order, then the
+/// authority port as a final fallback:
+///
+///   priority-1 bucket (port 20007): V6:H3, V4:H3, V6:H2, V4:H2
+///   priority-2 bucket (port 20008): V6:H3, V4:H3, V6:H2, V4:H2
+///   fallback   bucket (port   443): V6:H3, V4:H3, V6:H2, V4:H2
+#[test]
+fn https_two_service_infos_with_different_ports() {
+    const PORT_1: u16 = 20007;
+    const PORT_2: u16 = 20008;
+    let (mut now, mut he) = setup(); // PORT = 443
+
+    let attempt = |id: u64, addr: IpAddr, port: u16, protocol: ConnectionAttemptHttpVersions| {
+        Output::AttemptConnection {
+            id: Id::from(id),
+            endpoint: Endpoint {
+                address: SocketAddr::new(addr, port),
+                protocol,
+                ech_config: None,
+            },
+        }
+    };
+
+    he.expect(
+        vec![
+            (None, Some(out_send_dns_https(Id::from(0)))),
+            (None, Some(out_send_dns_aaaa(Id::from(1)))),
+            (None, Some(out_send_dns_a(Id::from(2)))),
+            // Two ServiceInfo records; the lower priority number wins first.
+            (
+                Some(Input::DnsResult {
+                    id: Id::from(0),
+                    result: DnsResult::Https(Ok(vec![
+                        happy_eyeballs::ServiceInfo {
+                            priority: 1,
+                            target_name: HOSTNAME.into(),
+                            alpn_protocols: HashSet::from([HttpVersion::H3, HttpVersion::H2]),
+                            ipv6_hints: vec![],
+                            ipv4_hints: vec![],
+                            ech_config: None,
+                            port: Some(PORT_1),
+                        },
+                        happy_eyeballs::ServiceInfo {
+                            priority: 2,
+                            target_name: HOSTNAME.into(),
+                            alpn_protocols: HashSet::from([HttpVersion::H3, HttpVersion::H2]),
+                            ipv6_hints: vec![],
+                            ipv4_hints: vec![],
+                            ech_config: None,
+                            port: Some(PORT_2),
+                        },
+                    ])),
+                }),
+                Some(out_resolution_delay()),
+            ),
+            // AAAA arrives; move-on criteria met. First bucket is PORT_1.
+            (
+                Some(in_dns_aaaa_positive(Id::from(1))),
+                Some(attempt(
+                    3,
+                    V6_ADDR.into(),
+                    PORT_1,
+                    ConnectionAttemptHttpVersions::H3,
+                )),
+            ),
+            (None, Some(out_connection_attempt_delay())),
+            (
+                Some(in_dns_a_positive(Id::from(2))),
+                Some(out_connection_attempt_delay()),
+            ),
+        ],
+        now,
+    );
+
+    he.expect_connection_attempts(
+        &mut now,
+        vec![
+            // Priority-1 bucket (port 20007): V4:H3, V6:H2, V4:H2.
+            attempt(4, V4_ADDR.into(), PORT_1, ConnectionAttemptHttpVersions::H3),
+            attempt(5, V6_ADDR.into(), PORT_1, ConnectionAttemptHttpVersions::H2),
+            attempt(6, V4_ADDR.into(), PORT_1, ConnectionAttemptHttpVersions::H2),
+            // Priority-2 bucket (port 20008).
+            attempt(7, V6_ADDR.into(), PORT_2, ConnectionAttemptHttpVersions::H3),
+            attempt(8, V4_ADDR.into(), PORT_2, ConnectionAttemptHttpVersions::H3),
+            attempt(9, V6_ADDR.into(), PORT_2, ConnectionAttemptHttpVersions::H2),
+            attempt(
+                10,
+                V4_ADDR.into(),
+                PORT_2,
+                ConnectionAttemptHttpVersions::H2,
+            ),
+            // Fallback bucket (port 443).
+            out_attempt_v6_h3(Id::from(11)),
+            out_attempt_v4_h3(Id::from(12)),
+            out_attempt_v6_h2(Id::from(13)),
+            out_attempt_v4_h2(Id::from(14)),
+        ],
     );
 }
 
@@ -1207,5 +1549,109 @@ fn no_default_alpn() {
             ),
         ],
         now,
+    );
+}
+
+#[test]
+fn https_svc1_addresses_trigger_additional_attempts() {
+    const SVC1: &str = "svc1.example.com.";
+
+    let (mut now, mut he) = setup();
+
+    he.expect(
+        vec![
+            (None, Some(out_send_dns_https(Id::from(0)))),
+            (None, Some(out_send_dns_aaaa(Id::from(1)))),
+            (None, Some(out_send_dns_a(Id::from(2)))),
+            (
+                Some(Input::DnsResult {
+                    id: Id::from(0),
+                    result: DnsResult::Https(Ok(vec![
+                        happy_eyeballs::ServiceInfo {
+                            priority: 1,
+                            target_name: HOSTNAME.into(),
+                            alpn_protocols: HashSet::from([HttpVersion::H2, HttpVersion::H3]),
+                            ipv6_hints: vec![],
+                            ipv4_hints: vec![],
+                            ech_config: None,
+                            port: None,
+                        },
+                        happy_eyeballs::ServiceInfo {
+                            priority: 2,
+                            target_name: SVC1.into(),
+                            alpn_protocols: HashSet::from([HttpVersion::H2, HttpVersion::H3]),
+                            ipv6_hints: vec![],
+                            ipv4_hints: vec![],
+                            ech_config: None,
+                            port: None,
+                        },
+                    ])),
+                }),
+                Some(Output::SendDnsQuery {
+                    id: Id::from(3),
+                    hostname: SVC1.into(),
+                    record_type: DnsRecordType::Aaaa,
+                }),
+            ),
+            (
+                None,
+                Some(Output::SendDnsQuery {
+                    id: Id::from(4),
+                    hostname: SVC1.into(),
+                    record_type: DnsRecordType::A,
+                }),
+            ),
+            (None, Some(out_resolution_delay())),
+            (
+                Some(in_dns_aaaa_positive(Id::from(1))),
+                Some(out_attempt_v6_h3(Id::from(5))),
+            ),
+            (
+                Some(in_dns_a_positive(Id::from(2))),
+                Some(out_connection_attempt_delay()),
+            ),
+            (
+                Some(Input::DnsResult {
+                    id: Id::from(3),
+                    result: DnsResult::Aaaa(Ok(vec![V6_ADDR_2])),
+                }),
+                Some(out_connection_attempt_delay()),
+            ),
+            (
+                Some(Input::DnsResult {
+                    id: Id::from(4),
+                    result: DnsResult::A(Ok(vec![V4_ADDR_2])),
+                }),
+                Some(out_connection_attempt_delay()),
+            ),
+        ],
+        now,
+    );
+
+    let attempt = |id: u64, addr: IpAddr, protocol: ConnectionAttemptHttpVersions| {
+        Output::AttemptConnection {
+            id: Id::from(id),
+            endpoint: Endpoint {
+                address: SocketAddr::new(addr, PORT),
+                protocol,
+                ech_config: None,
+            },
+        }
+    };
+
+    // Addresses respect HTTPS record priority: P1 (HOSTNAME, priority=1) endpoints
+    // come before P2 (SVC1, priority=2) endpoints.  V6_ADDR:H3 was already
+    // attempted (id=5); the remaining 7 follow in priority order.
+    he.expect_connection_attempts(
+        &mut now,
+        vec![
+            attempt(6, V4_ADDR.into(), ConnectionAttemptHttpVersions::H3), // priority=1
+            attempt(7, V6_ADDR.into(), ConnectionAttemptHttpVersions::H2), // priority=1
+            attempt(8, V4_ADDR.into(), ConnectionAttemptHttpVersions::H2), // priority=1
+            attempt(9, V6_ADDR_2.into(), ConnectionAttemptHttpVersions::H3), // priority=2
+            attempt(10, V4_ADDR_2.into(), ConnectionAttemptHttpVersions::H3), // priority=2
+            attempt(11, V6_ADDR_2.into(), ConnectionAttemptHttpVersions::H2), // priority=2
+            attempt(12, V4_ADDR_2.into(), ConnectionAttemptHttpVersions::H2), // priority=2
+        ],
     );
 }

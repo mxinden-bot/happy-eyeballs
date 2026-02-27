@@ -110,35 +110,20 @@ impl DnsResult {
     fn flatten_into_endpoints(
         &self,
         port: u16,
-        got_a: bool,
-        got_aaaa: bool,
-        protocols: HashSet<ConnectionAttemptHttpVersions>,
-        ech_config: Option<Vec<u8>>,
+        protocols: &HashSet<ConnectionAttemptHttpVersions>,
     ) -> Vec<Endpoint> {
         match self {
-            DnsResult::Https(infos) => infos
-                .as_ref()
-                .ok()
-                .into_iter()
-                .flat_map(|infos| {
-                    infos
-                        .iter()
-                        .flat_map(|info| info.flatten_into_endpoints(port, got_a, got_aaaa))
-                })
-                // TODO: way around allocation?
-                .collect(),
+            DnsResult::Https(_) => unreachable!(),
             DnsResult::Aaaa(ipv6_addrs) => ipv6_addrs
                 .as_ref()
                 .ok()
                 .into_iter()
                 .flat_map(|addrs| {
                     addrs.iter().cloned().flat_map(|ip| {
-                        // TODO: way around allocation?
-                        let ech_config = ech_config.clone();
                         protocols.iter().map(move |p| Endpoint {
                             address: SocketAddr::new(IpAddr::V6(ip), port),
                             protocol: *p,
-                            ech_config: ech_config.clone(),
+                            ech_config: None,
                         })
                     })
                 })
@@ -150,12 +135,10 @@ impl DnsResult {
                 .into_iter()
                 .flat_map(|addrs| {
                     addrs.iter().cloned().flat_map(|ip| {
-                        // TODO: way around allocation?
-                        let ech_config = ech_config.clone();
                         protocols.iter().map(move |p| Endpoint {
                             address: SocketAddr::new(IpAddr::V4(ip), port),
                             protocol: *p,
-                            ech_config: ech_config.clone(),
+                            ech_config: None,
                         })
                     })
                 })
@@ -246,6 +229,7 @@ pub struct ServiceInfo {
     pub ech_config: Option<Vec<u8>>,
     pub ipv4_hints: Vec<Ipv4Addr>,
     pub ipv6_hints: Vec<Ipv6Addr>,
+    pub port: Option<u16>,
 }
 
 impl Debug for ServiceInfo {
@@ -276,23 +260,38 @@ impl Debug for ServiceInfo {
 }
 
 impl ServiceInfo {
-    fn flatten_into_endpoints(&self, port: u16, got_a: bool, got_aaaa: bool) -> Vec<Endpoint> {
-        self.ipv6_hints
+    fn flatten_into_endpoints(
+        &self,
+        port: u16,
+        ipv4_addrs: &[Ipv4Addr],
+        ipv6_addrs: &[Ipv6Addr],
+        protocols: &HashSet<ConnectionAttemptHttpVersions>,
+    ) -> Vec<Endpoint> {
+        let port = self.port.unwrap_or(port);
+
+        // > ServiceMode records can contain address hints via ipv6hint and
+        // > ipv4hint parameters. When these are received, they SHOULD be
+        // > considered as positive non-empty answers for the purpose of the
+        // > algorithm when A and AAAA records corresponding to the TargetName
+        // > are not available yet.
+        //
+        // <https://www.ietf.org/archive/id/draft-ietf-happy-happyeyeballs-v3-02.html#section-4.2.1>
+        let hint_v6 = if ipv6_addrs.is_empty() {
+            self.ipv6_hints.as_slice()
+        } else {
+            &[]
+        };
+        let hint_v4 = if ipv4_addrs.is_empty() {
+            self.ipv4_hints.as_slice()
+        } else {
+            &[]
+        };
+
+        let hints = hint_v6
             .iter()
             .cloned()
             .map(IpAddr::V6)
-            .chain(self.ipv4_hints.iter().cloned().map(IpAddr::V4))
-            // > ServiceMode records can contain address hints via ipv6hint and
-            // > ipv4hint parameters. When these are received, they SHOULD be
-            // > considered as positive non-empty answers for the purpose of the
-            // > algorithm when A and AAAA records corresponding to the TargetName
-            // > are not available yet.
-            //
-            // <https://www.ietf.org/archive/id/draft-ietf-happy-happyeyeballs-v3-02.html#section-4.2.1>
-            .filter(|ip| match ip {
-                IpAddr::V6(_) => !got_aaaa,
-                IpAddr::V4(_) => !got_a,
-            })
+            .chain(hint_v4.iter().cloned().map(IpAddr::V4))
             .flat_map(|ip| {
                 // TODO: way around allocation?
                 let ech_config = self.ech_config.clone();
@@ -304,8 +303,24 @@ impl ServiceInfo {
                         protocol,
                         ech_config: ech_config.clone(),
                     })
-            })
-            .collect()
+            });
+
+        let addrs = ipv6_addrs
+            .iter()
+            .cloned()
+            .map(IpAddr::V6)
+            .chain(ipv4_addrs.iter().cloned().map(IpAddr::V4))
+            .flat_map(|ip| {
+                // TODO: way around allocation?
+                let ech_config = self.ech_config.clone();
+                protocols.iter().map(move |p| Endpoint {
+                    address: SocketAddr::new(ip, port),
+                    protocol: *p,
+                    ech_config: ech_config.clone(),
+                })
+            });
+
+        hints.chain(addrs).collect()
     }
 }
 
@@ -969,11 +984,11 @@ impl HappyEyeballs {
     }
 
     fn next_endpoint_to_attempt(&self) -> Option<Endpoint> {
-        match self.host {
+        let origin_domain = match &self.host {
             Host::Ipv4(ipv4_addr) => {
                 let protocols = self.connection_attempt_protocols();
                 return Some(Endpoint {
-                    address: SocketAddr::new(IpAddr::V4(ipv4_addr), self.port),
+                    address: SocketAddr::new(IpAddr::V4(*ipv4_addr), self.port),
                     protocol: *protocols.iter().next()?,
                     ech_config: None,
                 });
@@ -981,82 +996,90 @@ impl HappyEyeballs {
             Host::Ipv6(ipv6_addr) => {
                 let protocols = self.connection_attempt_protocols();
                 return Some(Endpoint {
-                    address: SocketAddr::new(IpAddr::V6(ipv6_addr), self.port),
+                    address: SocketAddr::new(IpAddr::V6(*ipv6_addr), self.port),
                     protocol: *protocols.iter().next()?,
                     ech_config: None,
                 });
             }
-            Host::Domain(_) => {}
-        }
+            Host::Domain(domain) => domain,
+        };
 
-        let got_a = self.got_dns_a_response();
-        let got_aaaa = self.got_dns_aaaa_response();
-        let mut endpoints = self
+        // Collect all ServiceInfos sorted by priority.
+        let mut service_infos: Vec<&ServiceInfo> = self
             .dns_queries
             .iter()
-            .filter_map(|q| q.get_response())
-            .flat_map(|r| {
-                r.flatten_into_endpoints(
-                    self.port,
-                    got_a,
-                    got_aaaa,
-                    self.connection_attempt_protocols(),
-                    self.ech_config(),
-                )
+            .filter_map(|q| match q {
+                DnsQuery::Completed {
+                    response: DnsResult::Https(Ok(infos)),
+                    ..
+                } => Some(infos.as_slice()),
+                _ => None,
             })
-            .filter(|endpoint| {
-                !self
-                    .connection_attempts
-                    .iter()
-                    .any(|attempt| attempt.endpoint == *endpoint)
-            })
-            .collect::<Vec<_>>();
-        endpoints.sort_by(|a, b| a.sort_with_config(b, &self.network_config));
-        endpoints.into_iter().next()
-    }
+            .flatten()
+            .collect();
+        service_infos.sort_by_key(|i| i.priority);
 
-    fn got_dns_aaaa_response(&self) -> bool {
-        self.dns_queries
-            .iter()
-            .filter(|q| {
-                *q.target_name()
-                    == match &self.host {
-                        Host::Domain(d) => d.as_str().into(),
-                        Host::Ipv4(_ipv4_addr) => todo!(),
-                        Host::Ipv6(_ipv6_addr) => todo!(),
-                    }
-            })
-            .any(|q| {
-                matches!(
-                    q,
+        // build a sorted endpoints per ServiceInfo.
+        let protocols = self.connection_attempt_protocols();
+        let mut endpoints: Vec<Endpoint> = Vec::new();
+        for info in &service_infos {
+            let ipv4_addrs: Vec<Ipv4Addr> = self
+                .dns_queries
+                .iter()
+                .filter_map(|q| match q {
                     DnsQuery::Completed {
-                        response: DnsResult::Aaaa(Ok(addrs)),
-                        ..
-                    } if !addrs.is_empty()
-                )
-            })
-    }
-
-    fn got_dns_a_response(&self) -> bool {
-        self.dns_queries
-            .iter()
-            .filter(|q| {
-                *q.target_name()
-                    == match &self.host {
-                        Host::Domain(d) => d.as_str().into(),
-                        Host::Ipv4(_ipv4_addr) => todo!(),
-                        Host::Ipv6(_ipv6_addr) => todo!(),
-                    }
-            })
-            .any(|q| {
-                matches!(
-                    q,
-                    DnsQuery::Completed {
+                        target_name,
                         response: DnsResult::A(Ok(addrs)),
                         ..
-                    } if !addrs.is_empty()
-                )
+                    } if target_name == &info.target_name => Some(addrs.as_slice()),
+                    _ => None,
+                })
+                .flatten()
+                .cloned()
+                .collect();
+            let ipv6_addrs: Vec<Ipv6Addr> = self
+                .dns_queries
+                .iter()
+                .filter_map(|q| match q {
+                    DnsQuery::Completed {
+                        target_name,
+                        response: DnsResult::Aaaa(Ok(addrs)),
+                        ..
+                    } if target_name == &info.target_name => Some(addrs.as_slice()),
+                    _ => None,
+                })
+                .flatten()
+                .cloned()
+                .collect();
+            let mut bucket =
+                info.flatten_into_endpoints(self.port, &ipv4_addrs, &ipv6_addrs, &protocols);
+            bucket.sort_by(|a, b| a.sort_with_config(b, &self.network_config));
+            endpoints.extend(bucket);
+        }
+
+        // Fallback to AAAA and A of the original hostname only.
+        let mut bucket: Vec<Endpoint> = self
+            .dns_queries
+            .iter()
+            .filter_map(|q| match q {
+                DnsQuery::Completed {
+                    target_name,
+                    response: r @ (DnsResult::Aaaa(_) | DnsResult::A(_)),
+                    ..
+                } if target_name.0 == *origin_domain => Some(r),
+                _ => None,
             })
+            .flat_map(|r| r.flatten_into_endpoints(self.port, &protocols))
+            .collect();
+        bucket.sort_by(|a, b| a.sort_with_config(b, &self.network_config));
+        endpoints.extend(bucket);
+
+        endpoints.into_iter().find(|endpoint| {
+            !self
+                .connection_attempts
+                .iter()
+                .any(|attempt| attempt.endpoint == *endpoint)
+        })
     }
 
     fn has_successful_connection(&self) -> bool {
@@ -1124,32 +1147,6 @@ impl HappyEyeballs {
         }
 
         ConnectionAttemptHttpVersions::from_protocols(&protocols)
-    }
-
-    /// Get the ECH config from HTTPS DNS records for the current host.
-    fn ech_config(&self) -> Option<Vec<u8>> {
-        let target_name: TargetName = match &self.host {
-            Host::Ipv4(_) | Host::Ipv6(_) => {
-                return None;
-            }
-            Host::Domain(domain) => domain.as_str(),
-        }
-        .into();
-
-        self.dns_queries
-            .iter()
-            .filter_map(|q| match q {
-                DnsQuery::Completed {
-                    response: DnsResult::Https(Ok(infos)),
-                    ..
-                    // TODO: What about other target names?
-                } if *q.target_name() == target_name => {
-                    infos.iter().find_map(|info| info.ech_config.clone())
-                }
-                _ => None,
-            })
-            // TODO: What if there are multiple?
-            .next()
     }
 
     /// Whether to move on to the connection attempt phase based on the received
