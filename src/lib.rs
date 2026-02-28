@@ -46,7 +46,7 @@
 //! he.process_input(Input::DnsResult { id: dns_id.unwrap(), result: dns_result }, Instant::now());
 //! ```
 //!
-//! For complete example usage, see the tests in [`tests/integration.rs`](tests/integration.rs).
+//! For complete example usage, see the [`tests/`](tests/).
 
 use std::cmp::Ordering;
 use std::collections::HashSet;
