@@ -11,6 +11,7 @@ use happy_eyeballs::{
 };
 
 const HOSTNAME: &str = "example.com";
+const SVC1: &str = "svc1.example.com.";
 const PORT: u16 = 443;
 const CUSTOM_PORT: u16 = 8443;
 const V6_ADDR: Ipv6Addr = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1);
@@ -82,20 +83,6 @@ fn in_dns_https_positive_no_alpn(id: Id) -> Input {
     }
 }
 
-fn in_dns_https_positive_h2_h3(id: Id) -> Input {
-    Input::DnsResult {
-        id,
-        result: DnsResult::Https(Ok(vec![happy_eyeballs::ServiceInfo {
-            priority: 1,
-            target_name: HOSTNAME.into(),
-            alpn_protocols: HashSet::from([HttpVersion::H3, HttpVersion::H2]),
-            ipv6_hints: vec![],
-            ipv4_hints: vec![],
-            ech_config: None,
-            port: None,
-        }])),
-    }
-}
 
 fn in_dns_https_positive_v6_hints(id: Id) -> Input {
     Input::DnsResult {
@@ -117,7 +104,7 @@ fn in_dns_https_positive_svc1(id: Id) -> Input {
         id,
         result: DnsResult::Https(Ok(vec![happy_eyeballs::ServiceInfo {
             priority: 1,
-            target_name: "svc1.example.com.".into(),
+            target_name: SVC1.into(),
             alpn_protocols: HashSet::from([HttpVersion::H3, HttpVersion::H2]),
             ipv6_hints: vec![Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 2)],
             ipv4_hints: vec![],
@@ -192,7 +179,7 @@ fn out_send_dns_aaaa(id: Id) -> Output {
 fn out_send_dns_svc1(id: Id) -> Output {
     Output::SendDnsQuery {
         id,
-        hostname: "svc1.example.com.".into(),
+        hostname: SVC1.into(),
         record_type: DnsRecordType::Aaaa,
     }
 }
@@ -1551,7 +1538,7 @@ fn no_default_alpn() {
             (None, Some(out_send_dns_aaaa(Id::from(1)))),
             (None, Some(out_send_dns_a(Id::from(2)))),
             (
-                Some(in_dns_https_positive_h2_h3(Id::from(0))),
+                Some(in_dns_https_positive(Id::from(0))),
                 Some(out_resolution_delay()),
             ),
             (
@@ -1585,8 +1572,6 @@ fn no_default_alpn() {
 
 #[test]
 fn https_svc1_addresses_trigger_additional_attempts() {
-    const SVC1: &str = "svc1.example.com.";
-
     let (mut now, mut he) = setup();
 
     he.expect(

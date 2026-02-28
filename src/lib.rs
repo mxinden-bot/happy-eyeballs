@@ -163,6 +163,12 @@ impl From<TargetName> for String {
     }
 }
 
+impl TargetName {
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 impl Debug for TargetName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
@@ -198,6 +204,7 @@ pub enum Output {
     /// Connection attempt succeeded
     Succeeded,
 
+    /// All connection attempts have failed and there are no more to try
     Failed,
 }
 
@@ -389,11 +396,7 @@ impl DnsQuery {
     fn record_type(&self) -> DnsRecordType {
         match self {
             DnsQuery::InProgress { record_type, .. } => *record_type,
-            DnsQuery::Completed { response, .. } => match response {
-                DnsResult::Https(_) => DnsRecordType::Https,
-                DnsResult::Aaaa(_) => DnsRecordType::Aaaa,
-                DnsResult::A(_) => DnsRecordType::A,
-            },
+            DnsQuery::Completed { response, .. } => response.record_type(),
         }
     }
 
@@ -673,33 +676,28 @@ impl HappyEyeballs {
     }
 
     fn process_output_inner(&mut self, now: Instant) -> Option<Output> {
-        // Check if we have any successful connection that requires canceling other attempts
-        let output = self.cancel_remaining_attempts();
-        if output.is_some() {
-            return output;
+        // Check if we have any successful connection that requires canceling other attempts.
+        if let Some(o) = self.cancel_remaining_attempts() {
+            return Some(o);
         }
 
         // TODO: Move below self.connection_attempt()?
         // Send DNS queries.
-        let output = self.send_dns_request();
-        if output.is_some() {
-            return output;
+        if let Some(o) = self.send_dns_request() {
+            return Some(o);
         }
 
         // Attempt connections.
-        let output = self.connection_attempt(now);
-        if output.is_some() {
-            return output;
+        if let Some(o) = self.connection_attempt(now) {
+            return Some(o);
         }
 
-        let output = self.send_dns_request_for_target_name();
-        if output.is_some() {
-            return output;
+        if let Some(o) = self.send_dns_request_for_target_name() {
+            return Some(o);
         }
 
-        let output = self.delay(now);
-        if output.is_some() {
-            return output;
+        if let Some(o) = self.delay(now) {
+            return Some(o);
         }
 
         if !self.has_successful_connection()
@@ -1061,7 +1059,7 @@ impl HappyEyeballs {
                     target_name,
                     response: r @ (DnsResult::Aaaa(_) | DnsResult::A(_)),
                     ..
-                } if target_name.0 == *origin_domain => Some(r),
+                } if target_name.as_str() == origin_domain => Some(r),
                 _ => None,
             })
             .flat_map(|r| r.flatten_into_endpoints(self.port, &protocols))
@@ -1099,22 +1097,13 @@ impl HappyEyeballs {
         let mut protocols = HashSet::new();
 
         // Add protocols from DNS HTTPS records
-        for alpn in self.dns_queries.iter().filter_map(|q| match q {
+        protocols.extend(self.dns_queries.iter().filter_map(|q| match q {
             DnsQuery::Completed {
                 response: DnsResult::Https(Ok(infos)),
                 ..
-            } => Some(
-                infos
-                    .iter()
-                    .flat_map(|i| i.alpn_protocols.iter().cloned())
-                    .collect::<Vec<_>>(),
-            ),
+            } => Some(infos.iter().flat_map(|i| i.alpn_protocols.iter().cloned())),
             _ => None,
-        }) {
-            for protocol in alpn {
-                protocols.insert(protocol);
-            }
-        }
+        }).flatten());
 
         // If HTTPS DNS records didn't specify any protocols, default to HTTP/2, and HTTP/1.1.
         if protocols.is_empty() {
@@ -1146,7 +1135,7 @@ impl HappyEyeballs {
 
     /// Whether to move on to the connection attempt phase based on the received
     /// DNS responses, not based on a timeout.
-    fn move_on_without_timeout(&mut self) -> bool {
+    fn move_on_without_timeout(&self) -> bool {
         let hostname = match self.host {
             Host::Domain(ref d) => d.as_str(),
             Host::Ipv4(_) | Host::Ipv6(_) => {
@@ -1191,7 +1180,7 @@ impl HappyEyeballs {
         if !self
             .dns_queries
             .iter()
-            .filter(|q| q.target_name().0 == hostname)
+            .filter(|q| q.target_name().as_str() == hostname)
             .filter(|q| matches!(q, DnsQuery::Completed { .. }))
             .any(|q| q.record_type() == DnsRecordType::Https)
         {
@@ -1202,7 +1191,7 @@ impl HappyEyeballs {
     }
 
     /// Whether to move on to the connection attempt phase based on a timeout.
-    fn move_on_with_timeout(&mut self, now: Instant) -> bool {
+    fn move_on_with_timeout(&self, now: Instant) -> bool {
         // > Or:
         // >
         // > - Some positive (non-empty) address answers have been received AND
