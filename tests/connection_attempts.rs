@@ -7,8 +7,7 @@ use common::*;
 use std::net::SocketAddr;
 
 use happy_eyeballs::{
-    CONNECTION_ATTEMPT_DELAY, ConnectionAttemptHttpVersions, DnsResult, Endpoint, Id, Input,
-    Output,
+    CONNECTION_ATTEMPT_DELAY, ConnectionAttemptHttpVersions, DnsResult, Endpoint, Id, Input, Output,
 };
 
 #[test]

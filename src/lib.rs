@@ -186,20 +186,13 @@ pub enum Output {
     },
 
     /// Start a timer
-    Timer {
-        duration: Duration,
-    },
+    Timer { duration: Duration },
 
     /// Attempt to connect to an address
-    AttemptConnection {
-        id: Id,
-        endpoint: Endpoint,
-    },
+    AttemptConnection { id: Id, endpoint: Endpoint },
 
     /// Cancel a connection attempt
-    CancelConnection {
-        id: Id,
-    },
+    CancelConnection { id: Id },
 
     /// Connection attempt succeeded
     Succeeded,
@@ -1097,13 +1090,18 @@ impl HappyEyeballs {
         let mut protocols = HashSet::new();
 
         // Add protocols from DNS HTTPS records
-        protocols.extend(self.dns_queries.iter().filter_map(|q| match q {
-            DnsQuery::Completed {
-                response: DnsResult::Https(Ok(infos)),
-                ..
-            } => Some(infos.iter().flat_map(|i| i.alpn_protocols.iter().cloned())),
-            _ => None,
-        }).flatten());
+        protocols.extend(
+            self.dns_queries
+                .iter()
+                .filter_map(|q| match q {
+                    DnsQuery::Completed {
+                        response: DnsResult::Https(Ok(infos)),
+                        ..
+                    } => Some(infos.iter().flat_map(|i| i.alpn_protocols.iter().cloned())),
+                    _ => None,
+                })
+                .flatten(),
+        );
 
         // If HTTPS DNS records didn't specify any protocols, default to HTTP/2, and HTTP/1.1.
         if protocols.is_empty() {
