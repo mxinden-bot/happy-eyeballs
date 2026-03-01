@@ -99,11 +99,17 @@ impl DnsResult {
         }
     }
 
+    /// Returns true if this result contains at least one non-empty record.
+    ///
+    /// > Some positive (non-empty) address answers have been received
+    ///
+    /// <https://www.ietf.org/archive/id/draft-ietf-happy-happyeyeballs-v3-02.html#section-4.2>
     fn positive(&self) -> bool {
         match self {
-            DnsResult::Https(r) => r.is_ok(),
-            DnsResult::Aaaa(r) => r.is_ok(),
-            DnsResult::A(r) => r.is_ok(),
+            DnsResult::Https(Ok(v)) => !v.is_empty(),
+            DnsResult::Aaaa(Ok(v)) => !v.is_empty(),
+            DnsResult::A(Ok(v)) => !v.is_empty(),
+            _ => false,
         }
     }
 
