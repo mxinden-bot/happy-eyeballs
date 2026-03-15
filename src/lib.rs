@@ -174,6 +174,7 @@ impl Debug for TargetName {
 
 /// Output events from the Happy Eyeballs state machine
 #[derive(Debug, Clone, PartialEq)]
+#[must_use]
 pub enum Output {
     /// Send a DNS query
     SendDnsQuery {
@@ -670,6 +671,7 @@ impl HappyEyeballs {
     ///
     /// The caller must call [`HappyEyeballs::process_output`] repeatedly
     /// until it returns [`None`] or [`Output::Timer`].
+    #[must_use]
     pub fn process_output(&mut self, now: Instant) -> Option<Output> {
         let output = self.process_output_inner(now);
         trace!("target={} process_output: {:?}", self.host, output);
