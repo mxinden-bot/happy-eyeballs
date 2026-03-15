@@ -113,44 +113,35 @@ impl DnsResult {
         }
     }
 
+    fn ip_addrs(&self) -> impl Iterator<Item = IpAddr> + '_ {
+        let v6 = match self {
+            DnsResult::Aaaa(Ok(addrs)) => addrs.as_slice(),
+            _ => &[],
+        };
+        let v4 = match self {
+            DnsResult::A(Ok(addrs)) => addrs.as_slice(),
+            _ => &[],
+        };
+        v6.iter()
+            .copied()
+            .map(IpAddr::V6)
+            .chain(v4.iter().copied().map(IpAddr::V4))
+    }
+
     fn flatten_into_endpoints(
         &self,
         port: u16,
         http_versions: &HashSet<ConnectionAttemptHttpVersions>,
     ) -> Vec<Endpoint> {
-        match self {
-            DnsResult::Https(_) => unreachable!(),
-            DnsResult::Aaaa(ipv6_addrs) => ipv6_addrs
-                .as_ref()
-                .ok()
-                .into_iter()
-                .flat_map(|addrs| {
-                    addrs.iter().cloned().flat_map(|ip| {
-                        http_versions.iter().map(move |v| Endpoint {
-                            address: SocketAddr::new(IpAddr::V6(ip), port),
-                            http_version: *v,
-                            ech_config: None,
-                        })
-                    })
+        self.ip_addrs()
+            .flat_map(|ip| {
+                http_versions.iter().map(move |v| Endpoint {
+                    address: SocketAddr::new(ip, port),
+                    http_version: *v,
+                    ech_config: None,
                 })
-                // TODO: way around allocation?
-                .collect(),
-            DnsResult::A(ipv4_addrs) => ipv4_addrs
-                .as_ref()
-                .ok()
-                .into_iter()
-                .flat_map(|addrs| {
-                    addrs.iter().cloned().flat_map(|ip| {
-                        http_versions.iter().map(move |v| Endpoint {
-                            address: SocketAddr::new(IpAddr::V4(ip), port),
-                            http_version: *v,
-                            ech_config: None,
-                        })
-                    })
-                })
-                // TODO: way around allocation?
-                .collect(),
-        }
+            })
+            .collect()
     }
 }
 
