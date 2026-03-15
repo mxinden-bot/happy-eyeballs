@@ -373,47 +373,32 @@ impl ConnectionAttemptHttpVersions {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum DnsQuery {
-    InProgress {
-        id: Id,
-        target_name: TargetName,
-        record_type: DnsRecordType,
-    },
+struct DnsQuery {
+    id: Id,
+    target_name: TargetName,
+    record_type: DnsRecordType,
+    state: DnsQueryState,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum DnsQueryState {
+    InProgress,
     Completed {
-        id: Id,
-        target_name: TargetName,
         completed: Instant,
         response: DnsResult,
     },
 }
 
 impl DnsQuery {
-    fn id(&self) -> Id {
-        match self {
-            DnsQuery::InProgress { id, .. } => *id,
-            DnsQuery::Completed { id, .. } => *id,
+    fn response(&self) -> Option<&DnsResult> {
+        match &self.state {
+            DnsQueryState::InProgress => None,
+            DnsQueryState::Completed { response, .. } => Some(response),
         }
     }
 
-    fn record_type(&self) -> DnsRecordType {
-        match self {
-            DnsQuery::InProgress { record_type, .. } => *record_type,
-            DnsQuery::Completed { response, .. } => response.record_type(),
-        }
-    }
-
-    fn target_name(&self) -> &TargetName {
-        match self {
-            DnsQuery::InProgress { target_name, .. } => target_name,
-            DnsQuery::Completed { target_name, .. } => target_name,
-        }
-    }
-
-    fn get_response(&self) -> Option<&DnsResult> {
-        match self {
-            DnsQuery::InProgress { .. } => None,
-            DnsQuery::Completed { response, .. } => Some(response),
-        }
+    fn is_completed(&self) -> bool {
+        matches!(self.state, DnsQueryState::Completed { .. })
     }
 }
 
@@ -756,22 +741,15 @@ impl HappyEyeballs {
         }
 
         // If we have no in-progress DNS queries, no resolution delay needed.
-        if !self
-            .dns_queries
-            .iter()
-            .any(|q| matches!(q, DnsQuery::InProgress { .. }))
-        {
+        if !self.dns_queries.iter().any(|q| !q.is_completed()) {
             return None;
         }
 
         self.dns_queries
             .iter()
-            .filter_map(|q| match q {
-                DnsQuery::Completed {
-                    completed,
-                    // TODO: Currently considers all queries. Should we only consider A and AAAA?
-                    ..
-                } => Some(completed),
+            // TODO: Currently considers all queries. Should we only consider A and AAAA?
+            .filter_map(|q| match &q.state {
+                DnsQueryState::Completed { completed, .. } => Some(completed),
                 _ => None,
             })
             .min()
@@ -811,13 +789,14 @@ impl HappyEyeballs {
             if !self
                 .dns_queries
                 .iter()
-                .any(|q| q.record_type() == record_type)
+                .any(|q| q.record_type == record_type)
             {
                 let id = self.id_generator.next_id();
-                self.dns_queries.push(DnsQuery::InProgress {
+                self.dns_queries.push(DnsQuery {
                     id,
                     target_name: target_name.clone(),
                     record_type,
+                    state: DnsQueryState::InProgress,
                 });
                 return Some(Output::SendDnsQuery {
                     id,
@@ -841,8 +820,8 @@ impl HappyEyeballs {
         let target_names = self
             .dns_queries
             .iter()
-            .filter_map(|q| match q {
-                DnsQuery::Completed {
+            .filter_map(|q| match &q.state {
+                DnsQueryState::Completed {
                     response: DnsResult::Https(Ok(service_infos)),
                     ..
                 } => Some(service_infos.iter()),
@@ -860,15 +839,16 @@ impl HappyEyeballs {
                 !self
                     .dns_queries
                     .iter()
-                    .any(|q| q.target_name() == *tn && q.record_type() == *rt)
+                    .any(|q| q.target_name == **tn && q.record_type == *rt)
             })?;
 
         let target_name = target_name.clone();
         let id = self.id_generator.next_id();
-        self.dns_queries.push(DnsQuery::InProgress {
+        self.dns_queries.push(DnsQuery {
             id,
             target_name: target_name.clone(),
             record_type,
+            state: DnsQueryState::InProgress,
         });
         Some(Output::SendDnsQuery {
             id,
@@ -878,22 +858,17 @@ impl HappyEyeballs {
     }
 
     fn on_dns_response(&mut self, id: Id, response: DnsResult, now: Instant) {
-        let Some(query) = self.dns_queries.iter_mut().find(|q| q.id() == id) else {
+        let Some(query) = self.dns_queries.iter_mut().find(|q| q.id == id) else {
             debug_assert!(false, "got {response:?} for unknown id {id:?}");
             return;
         };
 
-        let target_name = match &query {
-            DnsQuery::InProgress { target_name, .. } => target_name.clone(),
-            DnsQuery::Completed { .. } => {
-                debug_assert!(false, "got {response:?} for already completed {query:?}");
-                return;
-            }
-        };
+        if query.is_completed() {
+            debug_assert!(false, "got {response:?} for already completed {query:?}");
+            return;
+        }
 
-        *query = DnsQuery::Completed {
-            id,
-            target_name,
+        query.state = DnsQueryState::Completed {
             completed: now,
             response,
         };
@@ -1035,8 +1010,8 @@ impl HappyEyeballs {
         let mut service_infos: Vec<&ServiceInfo> = self
             .dns_queries
             .iter()
-            .filter_map(|q| match q {
-                DnsQuery::Completed {
+            .filter_map(|q| match &q.state {
+                DnsQueryState::Completed {
                     response: DnsResult::Https(Ok(infos)),
                     ..
                 } => Some(infos.as_slice()),
@@ -1056,12 +1031,11 @@ impl HappyEyeballs {
             let ipv4_addrs: Vec<Ipv4Addr> = self
                 .dns_queries
                 .iter()
-                .filter_map(|q| match q {
-                    DnsQuery::Completed {
-                        target_name,
+                .filter_map(|q| match &q.state {
+                    DnsQueryState::Completed {
                         response: DnsResult::A(Ok(addrs)),
                         ..
-                    } if target_name == &info.target_name => Some(addrs.as_slice()),
+                    } if q.target_name == info.target_name => Some(addrs.as_slice()),
                     _ => None,
                 })
                 .flatten()
@@ -1070,12 +1044,11 @@ impl HappyEyeballs {
             let ipv6_addrs: Vec<Ipv6Addr> = self
                 .dns_queries
                 .iter()
-                .filter_map(|q| match q {
-                    DnsQuery::Completed {
-                        target_name,
+                .filter_map(|q| match &q.state {
+                    DnsQueryState::Completed {
                         response: DnsResult::Aaaa(Ok(addrs)),
                         ..
-                    } if target_name == &info.target_name => Some(addrs.as_slice()),
+                    } if q.target_name == info.target_name => Some(addrs.as_slice()),
                     _ => None,
                 })
                 .flatten()
@@ -1112,12 +1085,11 @@ impl HappyEyeballs {
                 let mut bucket: Vec<Endpoint> = self
                     .dns_queries
                     .iter()
-                    .filter_map(|q| match q {
-                        DnsQuery::Completed {
-                            target_name,
+                    .filter_map(|q| match &q.state {
+                        DnsQueryState::Completed {
                             response: r @ (DnsResult::Aaaa(_) | DnsResult::A(_)),
                             ..
-                        } if target_name.as_str() == origin_domain => Some(r),
+                        } if q.target_name.as_str() == origin_domain => Some(r),
                         _ => None,
                     })
                     .flat_map(|r| r.flatten_into_endpoints(alt_port, &alt_http_versions))
@@ -1130,12 +1102,11 @@ impl HappyEyeballs {
             let mut bucket: Vec<Endpoint> = self
                 .dns_queries
                 .iter()
-                .filter_map(|q| match q {
-                    DnsQuery::Completed {
-                        target_name,
+                .filter_map(|q| match &q.state {
+                    DnsQueryState::Completed {
                         response: r @ (DnsResult::Aaaa(_) | DnsResult::A(_)),
                         ..
-                    } if target_name.as_str() == origin_domain => Some(r),
+                    } if q.target_name.as_str() == origin_domain => Some(r),
                     _ => None,
                 })
                 .flat_map(|r| r.flatten_into_endpoints(self.port, &http_versions))
@@ -1159,9 +1130,7 @@ impl HappyEyeballs {
     }
 
     fn has_pending_queries(&self) -> bool {
-        self.dns_queries
-            .iter()
-            .any(|q| matches!(q, DnsQuery::InProgress { .. }))
+        self.dns_queries.iter().any(|q| !q.is_completed())
     }
 
     fn has_pending_connections(&self) -> bool {
@@ -1171,8 +1140,8 @@ impl HappyEyeballs {
     }
 
     fn any_ech(&self) -> bool {
-        self.dns_queries.iter().any(|q| match q {
-            DnsQuery::Completed {
+        self.dns_queries.iter().any(|q| match &q.state {
+            DnsQueryState::Completed {
                 response: DnsResult::Https(Ok(infos)),
                 ..
             } => infos.iter().any(|i| i.ech_config.is_some()),
@@ -1187,8 +1156,8 @@ impl HappyEyeballs {
         http_versions.extend(
             self.dns_queries
                 .iter()
-                .filter_map(|q| match q {
-                    DnsQuery::Completed {
+                .filter_map(|q| match &q.state {
+                    DnsQueryState::Completed {
                         response: DnsResult::Https(Ok(infos)),
                         ..
                     } => Some(
@@ -1242,17 +1211,16 @@ impl HappyEyeballs {
         // > Some positive (non-empty) address answers have been received AND
         //
         // <https://www.ietf.org/archive/id/draft-ietf-happy-happyeyeballs-v3-02.html#section-4.2>
-        if !self.dns_queries.iter().any(|q| match q {
-            DnsQuery::Completed { response, .. } => match response {
+        if !self.dns_queries.iter().any(|q| match &q.state {
+            DnsQueryState::Completed { response, .. } => match response {
                 DnsResult::Aaaa(Ok(addrs)) => !addrs.is_empty(),
                 DnsResult::A(Ok(addrs)) => !addrs.is_empty(),
                 DnsResult::Https(Ok(infos)) => infos
                     .iter()
                     .any(|i| !i.ipv4_hints.is_empty() || !i.ipv6_hints.is_empty()),
-
                 _ => false,
             },
-            DnsQuery::InProgress { .. } => false,
+            DnsQueryState::InProgress => false,
         }) {
             return false;
         }
@@ -1264,8 +1232,8 @@ impl HappyEyeballs {
         if !self
             .dns_queries
             .iter()
-            .filter(|q| matches!(q, DnsQuery::Completed { .. }))
-            .any(|q| q.record_type() == self.network_config.preferred_dns_record_type())
+            .filter(|q| q.is_completed())
+            .any(|q| q.record_type == self.network_config.preferred_dns_record_type())
         {
             return false;
         }
@@ -1276,9 +1244,9 @@ impl HappyEyeballs {
         if !self
             .dns_queries
             .iter()
-            .filter(|q| q.target_name().as_str() == hostname)
-            .filter(|q| matches!(q, DnsQuery::Completed { .. }))
-            .any(|q| q.record_type() == DnsRecordType::Https)
+            .filter(|q| q.target_name.as_str() == hostname)
+            .filter(|q| q.is_completed())
+            .any(|q| q.record_type == DnsRecordType::Https)
         {
             return false;
         }
@@ -1298,7 +1266,7 @@ impl HappyEyeballs {
         let mut positive_responses = self
             .dns_queries
             .iter()
-            .filter_map(|q| q.get_response())
+            .filter_map(|q| q.response())
             .filter(|r| r.positive())
             .filter(|r| matches!(r.record_type(), DnsRecordType::Aaaa | DnsRecordType::A));
         if positive_responses.next().is_none() {
@@ -1307,9 +1275,9 @@ impl HappyEyeballs {
 
         self.dns_queries
             .iter()
-            .filter_map(|q| match q {
-                DnsQuery::InProgress { .. } => None,
-                DnsQuery::Completed { completed, .. } => Some(completed),
+            .filter_map(|q| match &q.state {
+                DnsQueryState::InProgress => None,
+                DnsQueryState::Completed { completed, .. } => Some(completed),
             })
             .any(|completed| now.duration_since(*completed) >= self.network_config.resolution_delay)
     }
