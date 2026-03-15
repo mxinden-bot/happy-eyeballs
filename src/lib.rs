@@ -693,14 +693,13 @@ impl HappyEyeballs {
             return Some(o);
         }
 
-        // TODO: Move below self.connection_attempt()?
-        // Send DNS queries.
-        if let Some(o) = self.send_dns_request() {
+        // Attempt connections.
+        if let Some(o) = self.connection_attempt(now) {
             return Some(o);
         }
 
-        // Attempt connections.
-        if let Some(o) = self.connection_attempt(now) {
+        // Send DNS queries.
+        if let Some(o) = self.send_dns_request() {
             return Some(o);
         }
 
