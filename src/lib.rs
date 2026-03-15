@@ -724,7 +724,6 @@ impl HappyEyeballs {
         None
     }
 
-    // TODO: Rename to delay?
     fn delay(&self, now: Instant) -> Option<Output> {
         // If we have a successful connection, no connection attempt delay
         // needed.
