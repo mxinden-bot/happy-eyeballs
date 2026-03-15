@@ -543,7 +543,7 @@ pub struct Endpoint {
 }
 
 impl Endpoint {
-    fn sort_with_config(&self, other: &Endpoint, network_config: &NetworkConfig) -> Ordering {
+    fn cmp_with_config(&self, other: &Endpoint, network_config: &NetworkConfig) -> Ordering {
         if self.http_version != other.http_version {
             return self.http_version.cmp(&other.http_version);
         }
@@ -1056,7 +1056,7 @@ impl HappyEyeballs {
                 .collect();
             let mut bucket =
                 info.flatten_into_endpoints(self.port, &ipv4_addrs, &ipv6_addrs, &http_versions);
-            bucket.sort_by(|a, b| a.sort_with_config(b, &self.network_config));
+            bucket.sort_by(|a, b| a.cmp_with_config(b, &self.network_config));
             endpoints.extend(bucket);
         }
 
@@ -1094,7 +1094,7 @@ impl HappyEyeballs {
                     })
                     .flat_map(|r| r.flatten_into_endpoints(alt_port, &alt_http_versions))
                     .collect();
-                bucket.sort_by(|a, b| a.sort_with_config(b, &self.network_config));
+                bucket.sort_by(|a, b| a.cmp_with_config(b, &self.network_config));
                 endpoints.extend(bucket);
             }
 
@@ -1111,7 +1111,7 @@ impl HappyEyeballs {
                 })
                 .flat_map(|r| r.flatten_into_endpoints(self.port, &http_versions))
                 .collect();
-            bucket.sort_by(|a, b| a.sort_with_config(b, &self.network_config));
+            bucket.sort_by(|a, b| a.cmp_with_config(b, &self.network_config));
             endpoints.extend(bucket);
         }
 
