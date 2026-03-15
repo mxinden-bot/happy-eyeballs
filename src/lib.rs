@@ -983,7 +983,7 @@ impl HappyEyeballs {
     /// > - SVCB/HTTPS service information has been received (or has received a negative response)
     /// >
     /// > Or:
-    /// > - ome positive (non-empty) address answers have been received AND
+    /// > - Some positive (non-empty) address answers have been received AND
     /// > - A resolution time delay has passed after which other answers have not been received
     ///
     /// <https://www.ietf.org/archive/id/draft-ietf-happy-happyeyeballs-v3-02.html#section-4.2>
