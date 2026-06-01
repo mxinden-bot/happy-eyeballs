@@ -182,38 +182,6 @@ impl Default for Scenario {
     }
 }
 
-pub trait HappyEyeballsExt {
-    fn expect(&mut self, input_output: Vec<(Option<Input>, Option<Output>)>, now: Instant);
-    fn expect_connection_attempts(&mut self, now: &mut Instant, connections: Vec<Output>);
-}
-
-impl HappyEyeballsExt for HappyEyeballs {
-    fn expect(&mut self, input_output: Vec<(Option<Input>, Option<Output>)>, now: Instant) {
-        for (input, expected_output) in input_output {
-            if let Some(input) = input {
-                self.process_input(input, now);
-            }
-            let output = self.process_output(now);
-            assert_eq!(expected_output, output);
-        }
-    }
-
-    fn expect_connection_attempts(&mut self, now: &mut Instant, connections: Vec<Output>) {
-        for conn in connections {
-            *now += CONNECTION_ATTEMPT_DELAY;
-            self.expect(
-                vec![
-                    (None, Some(conn)),
-                    (None, Some(out_connection_attempt_delay())),
-                ],
-                *now,
-            );
-        }
-        *now += CONNECTION_ATTEMPT_DELAY;
-        self.expect(vec![(None, None)], *now);
-    }
-}
-
 pub fn in_dns_https_positive(id: Id) -> Input {
     Input::DnsResult {
         id,

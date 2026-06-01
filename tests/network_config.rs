@@ -235,10 +235,16 @@ fn assert_alt_svc_version_disabled(
     version: HttpVersion,
     expected_fallback: ConnectionAttemptHttpVersions,
 ) {
-    let mut s = Scenario::with_host_and_config(&V4_ADDR.to_string(), alt_svc_disabled_config(version));
+    let mut s =
+        Scenario::with_host_and_config(&V4_ADDR.to_string(), alt_svc_disabled_config(version));
     let attempt = s.next_id();
 
-    s.output(out_attempt(attempt, V4_ADDR.into(), PORT, expected_fallback));
+    s.output(out_attempt(
+        attempt,
+        V4_ADDR.into(),
+        PORT,
+        expected_fallback,
+    ));
 }
 
 /// Alt-svc H2 entry is filtered out when H2 is disabled in the network config.

@@ -63,7 +63,10 @@ fn happy_eyeballs_debug() {
     let dbg = format!("{:?}", s.he());
     assert!(dbg.contains("target"), "missing 'target': {dbg}");
     assert!(dbg.contains("port"), "missing 'port': {dbg}");
-    assert!(!dbg.contains("dns_queries"), "unexpected 'dns_queries': {dbg}");
+    assert!(
+        !dbg.contains("dns_queries"),
+        "unexpected 'dns_queries': {dbg}"
+    );
 
     // After first process_output, dns_queries is populated.
     let _ = s.process();

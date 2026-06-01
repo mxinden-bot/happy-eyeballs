@@ -26,7 +26,8 @@ fn expect_hints_move_on_with_timeout(
         .output(out_send_dns_aaaa(aaaa))
         .output(out_send_dns_a(a))
         .feed(https_input(https), out_resolution_delay());
-    s.advance(RESOLUTION_DELAY).output(expected_attempt(attempt));
+    s.advance(RESOLUTION_DELAY)
+        .output(expected_attempt(attempt));
 }
 
 #[test]
@@ -301,7 +302,10 @@ fn https_hints() {
     s.output(out_send_dns_https(https))
         .output(out_send_dns_aaaa(aaaa))
         .output(out_send_dns_a(a))
-        .feed(in_dns_https_positive_v4_and_v6_hints(https), out_resolution_delay());
+        .feed(
+            in_dns_https_positive_v4_and_v6_hints(https),
+            out_resolution_delay(),
+        );
 
     s.advance(RESOLUTION_DELAY)
         .output(out_attempt_v6_h3(v6_attempt))
@@ -329,11 +333,7 @@ fn https_hints() {
 #[test]
 fn https_hints_move_on_with_timeout() {
     let mut s = Scenario::new();
-    expect_hints_move_on_with_timeout(
-        &mut s,
-        in_dns_https_positive_v6_hints,
-        out_attempt_v6_h3,
-    );
+    expect_hints_move_on_with_timeout(&mut s, in_dns_https_positive_v6_hints, out_attempt_v6_h3);
 }
 
 /// HTTPS IPv4 hints should also count for `move_on_with_timeout`.
@@ -342,11 +342,7 @@ fn https_hints_move_on_with_timeout() {
 #[test]
 fn https_v4_hints_move_on_with_timeout() {
     let mut s = Scenario::new();
-    expect_hints_move_on_with_timeout(
-        &mut s,
-        in_dns_https_positive_v4_hints,
-        out_attempt_v4_h3,
-    );
+    expect_hints_move_on_with_timeout(&mut s, in_dns_https_positive_v4_hints, out_attempt_v4_h3);
 }
 
 /// When the resolution delay has exactly elapsed, `process_output` returns `None`,
@@ -490,7 +486,10 @@ fn single_stack_skips_disabled_address_family() {
             // Should skip the disabled address family query.
             .output((case.expected_dns_query)(family))
             .feed(in_dns_https_negative(https), out_resolution_delay())
-            .feed((case.dns_response)(family), (case.expected_connection)(attempt));
+            .feed(
+                (case.dns_response)(family),
+                (case.expected_connection)(attempt),
+            );
     }
 }
 
