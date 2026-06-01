@@ -27,6 +27,29 @@ pub fn ech_config() -> EchConfig {
     EchConfig::new(ECH_CONFIG_BYTES.to_vec())
 }
 
+/// Sequential [`Id`] allocator for tests.
+///
+/// The state machine hands out ids from a simple incrementing counter (DNS
+/// queries first, then connection attempts). Mirroring that here lets a test
+/// bind ids to meaningful names — `let aaaa = ids.next_id();` — instead of
+/// hard-coding `Id::from(0)`, `Id::from(1)`, ... Inserting a step then means
+/// adding one `next_id()` call rather than renumbering every id that follows.
+#[derive(Debug, Default)]
+pub struct IdSeq(u64);
+
+impl IdSeq {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns the next sequential id (`0`, `1`, `2`, ...).
+    pub fn next_id(&mut self) -> Id {
+        let id = Id::from(self.0);
+        self.0 += 1;
+        id
+    }
+}
+
 pub trait HappyEyeballsExt {
     fn expect(&mut self, input_output: Vec<(Option<Input>, Option<Output>)>, now: Instant);
     fn expect_connection_attempts(&mut self, now: &mut Instant, connections: Vec<Output>);
