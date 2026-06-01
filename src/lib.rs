@@ -42,7 +42,7 @@
 //!
 //! // Later pass results as input back to the state machine, e.g. a DNS
 //! // response arrives:
-//! # let dns_result = DnsResult::Aaaa(Ok(vec![Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1)]));
+//! # let dns_result = DnsResult::Aaaa(Ok(vec![Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1)]), None);
 //! he.process_input(Input::DnsResult { id: dns_id.unwrap(), result: dns_result }, Instant::now());
 //! ```
 //!
@@ -128,8 +128,14 @@ pub enum ConnectionResult {
 #[derive(Debug, Clone, PartialEq)]
 pub enum DnsResult {
     Https(Result<Vec<ServiceInfo>, ()>),
-    Aaaa(Result<Vec<Ipv6Addr>, ()>),
-    A(Result<Vec<Ipv4Addr>, ()>),
+    /// AAAA answer plus the canonical name (final target of the CNAME chain)
+    /// reported by the resolver for this query, if any. The canonical name is
+    /// only consulted for the origin query, where it is used to drop HTTPS
+    /// records whose `TargetName` is inconsistent with it.
+    Aaaa(Result<Vec<Ipv6Addr>, ()>, Option<TargetName>),
+    /// A answer plus the canonical name reported by the resolver, if any. See
+    /// [`DnsResult::Aaaa`].
+    A(Result<Vec<Ipv4Addr>, ()>, Option<TargetName>),
 }
 
 impl DnsResult {
@@ -137,8 +143,8 @@ impl DnsResult {
     /// non-empty AAAA/A records or HTTPS records with IP hints.
     fn has_addrs(&self) -> bool {
         match self {
-            DnsResult::Aaaa(Ok(v)) => !v.is_empty(),
-            DnsResult::A(Ok(v)) => !v.is_empty(),
+            DnsResult::Aaaa(Ok(v), _) => !v.is_empty(),
+            DnsResult::A(Ok(v), _) => !v.is_empty(),
             DnsResult::Https(Ok(infos)) => infos
                 .iter()
                 .any(|i| !i.ipv4_hints.is_empty() || !i.ipv6_hints.is_empty()),
@@ -146,13 +152,21 @@ impl DnsResult {
         }
     }
 
+    /// The canonical name reported by an A/AAAA answer, if any.
+    fn canonical_name(&self) -> Option<&TargetName> {
+        match self {
+            DnsResult::Aaaa(_, cname) | DnsResult::A(_, cname) => cname.as_ref(),
+            DnsResult::Https(_) => None,
+        }
+    }
+
     fn ip_addrs(&self) -> impl Iterator<Item = IpAddr> + '_ {
         let v6 = match self {
-            DnsResult::Aaaa(Ok(addrs)) => addrs.as_slice(),
+            DnsResult::Aaaa(Ok(addrs), _) => addrs.as_slice(),
             _ => &[],
         };
         let v4 = match self {
-            DnsResult::A(Ok(addrs)) => addrs.as_slice(),
+            DnsResult::A(Ok(addrs), _) => addrs.as_slice(),
             _ => &[],
         };
         v6.iter()
@@ -203,6 +217,19 @@ impl Debug for TargetName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }
+}
+
+/// Compares two DNS names for the HTTPS-RR / CNAME consistency check.
+///
+/// DNS names are case-insensitive (RFC 4343) and the representation may or may
+/// not carry a trailing dot depending on the source (an HTTPS record's
+/// `TargetName` versus a resolver-reported canonical name). Both are normalised
+/// before comparison so e.g. `Svc.Example.Com.` matches `svc.example.com`.
+fn target_names_match(a: &str, b: &str) -> bool {
+    fn normalize(s: &str) -> &str {
+        s.strip_suffix('.').unwrap_or(s)
+    }
+    normalize(a).eq_ignore_ascii_case(normalize(b))
 }
 
 /// Output events from the Happy Eyeballs state machine
@@ -670,6 +697,16 @@ enum Host {
     Domain(String),
 }
 
+impl Host {
+    /// The domain, or `None` when connecting to an IP literal.
+    fn domain(&self) -> Option<&str> {
+        match self {
+            Host::Domain(d) => Some(d.as_str()),
+            Host::Ip(_) => None,
+        }
+    }
+}
+
 impl From<UrlHost> for Host {
     fn from(host: UrlHost) -> Self {
         match host {
@@ -940,23 +977,18 @@ impl HappyEyeballs {
     fn send_dns_request_for_target_name(&mut self) -> Option<Output> {
         let any_ech = self.any_ech();
 
-        let target_names = self
-            .dns_queries
-            .iter()
-            .filter_map(|q| match &q.state {
-                DnsQueryState::Completed {
-                    response: DnsResult::Https(Ok(service_infos)),
-                    ..
-                } => Some(service_infos.iter()),
-                _ => None,
-            })
-            .flatten()
+        let target_names: Vec<TargetName> = self
+            .usable_service_infos()
+            .into_iter()
+            // CNAME-inconsistent ServiceInfos are already excluded by usable_service_infos.
             // When any ServiceInfo has ECH, skip resolving targets without ECH.
-            .filter(move |i| !any_ech || i.ech_config.is_some())
-            .map(|i| &i.target_name);
+            .filter(|i| !any_ech || i.ech_config.is_some())
+            .map(|i| i.target_name.clone())
+            .collect();
 
         // Next AAAA or A query, respecting single-stack preferences.
         let (target_name, record_type) = target_names
+            .iter()
             .flat_map(|tn| {
                 self.network_config
                     .ip
@@ -1197,18 +1229,11 @@ impl HappyEyeballs {
     fn endpoints_to_attempt_domain(&self, origin_domain: &str) -> Vec<Endpoint> {
         let any_ech = self.any_ech();
 
-        // Collect all ServiceInfos sorted by priority.
+        // Collect usable ServiceInfos (CNAME-consistent, per config) sorted by
+        // priority.
         let mut service_infos: Vec<&ServiceInfo> = self
-            .dns_queries
-            .iter()
-            .filter_map(|q| match &q.state {
-                DnsQueryState::Completed {
-                    response: DnsResult::Https(Ok(infos)),
-                    ..
-                } => Some(infos.as_slice()),
-                _ => None,
-            })
-            .flatten()
+            .usable_service_infos()
+            .into_iter()
             // When at least one ServiceInfo has ECH config, skip those without it
             // and skip the origin fallback.
             .filter(|i| !any_ech || i.ech_config.is_some())
@@ -1222,7 +1247,7 @@ impl HappyEyeballs {
             let ipv4_addrs: Option<&[Ipv4Addr]> =
                 self.dns_queries.iter().find_map(|q| match &q.state {
                     DnsQueryState::Completed {
-                        response: DnsResult::A(result),
+                        response: DnsResult::A(result, _),
                         ..
                     } if q.target_name == info.target_name => {
                         Some(result.as_deref().unwrap_or_default())
@@ -1232,7 +1257,7 @@ impl HappyEyeballs {
             let ipv6_addrs: Option<&[Ipv6Addr]> =
                 self.dns_queries.iter().find_map(|q| match &q.state {
                     DnsQueryState::Completed {
-                        response: DnsResult::Aaaa(result),
+                        response: DnsResult::Aaaa(result, _),
                         ..
                     } if q.target_name == info.target_name => {
                         Some(result.as_deref().unwrap_or_default())
@@ -1260,7 +1285,7 @@ impl HappyEyeballs {
                     .iter()
                     .filter_map(|q| match &q.state {
                         DnsQueryState::Completed {
-                            response: r @ (DnsResult::Aaaa(_) | DnsResult::A(_)),
+                            response: r @ (DnsResult::Aaaa(..) | DnsResult::A(..)),
                             ..
                         } if q.target_name.as_str() == origin_domain => Some(r),
                         _ => None,
@@ -1309,13 +1334,68 @@ impl HappyEyeballs {
         if !self.network_config.ech {
             return false;
         }
-        self.dns_queries.iter().any(|q| match &q.state {
-            DnsQueryState::Completed {
-                response: DnsResult::Https(Ok(infos)),
-                ..
-            } => infos.iter().any(|i| i.ech_config.is_some()),
-            _ => false,
+        self.usable_service_infos()
+            .iter()
+            .any(|i| i.ech_config.is_some())
+    }
+
+    /// Canonical names reported by the origin's completed A/AAAA resolutions.
+    ///
+    /// These drive the HTTPS-RR / CNAME consistency check. There may be more
+    /// than one (e.g. A and AAAA steering to different CDNs).
+    fn origin_canonical_names(&self, origin_domain: &str) -> Vec<&TargetName> {
+        self.dns_queries
+            .iter()
+            .filter(|q| q.target_name.as_str() == origin_domain)
+            .filter_map(|q| match &q.state {
+                DnsQueryState::Completed { response, .. } => response.canonical_name(),
+                DnsQueryState::InProgress => None,
+            })
+            .collect()
+    }
+
+    /// ServiceInfos from completed HTTPS responses that are usable for this
+    /// connection.
+    ///
+    /// When the origin's A/AAAA resolution reported a canonical name,
+    /// ServiceInfos whose `TargetName` is inconsistent with every reported
+    /// canonical name are dropped. A ServiceInfo is kept if its `TargetName`
+    /// matches the canonical name of either address family. When no canonical
+    /// name was reported, all ServiceInfos are returned unchanged.
+    ///
+    /// This runs before the ECH-based filtering so that dropping an
+    /// inconsistent ECH record lets the origin fallback re-engage, i.e. the
+    /// connection prefers the CNAME over a broken ECH target.
+    fn usable_service_infos(&self) -> Vec<&ServiceInfo> {
+        let all = self
+            .dns_queries
+            .iter()
+            .filter_map(|q| match &q.state {
+                DnsQueryState::Completed {
+                    response: DnsResult::Https(Ok(infos)),
+                    ..
+                } => Some(infos.iter()),
+                _ => None,
+            })
+            .flatten();
+
+        let Some(origin) = self.host.domain() else {
+            return all.collect();
+        };
+
+        let cnames = self.origin_canonical_names(origin);
+        if cnames.is_empty() {
+            // No canonical name reported: do not filter.
+            return all.collect();
+        }
+
+        // TODO: ideally we wouldn't allocate (i.e. not call collect) here.
+        all.filter(|i| {
+            cnames
+                .iter()
+                .any(|c| target_names_match(i.target_name.as_str(), c.as_str()))
         })
+        .collect()
     }
 
     /// HTTP versions when the host is an IP address (no DNS involved).
@@ -1335,20 +1415,9 @@ impl HappyEyeballs {
         let mut http_versions = HashSet::new();
 
         http_versions.extend(
-            self.dns_queries
+            self.usable_service_infos()
                 .iter()
-                .filter_map(|q| match &q.state {
-                    DnsQueryState::Completed {
-                        response: DnsResult::Https(Ok(infos)),
-                        ..
-                    } => Some(
-                        infos
-                            .iter()
-                            .flat_map(|i| i.alpn_http_versions.iter().cloned()),
-                    ),
-                    _ => None,
-                })
-                .flatten(),
+                .flat_map(|i| i.alpn_http_versions.iter().cloned()),
         );
 
         if http_versions.is_empty() {
@@ -1496,17 +1565,17 @@ mod tests {
     #[test]
     fn dns_result_has_addrs() {
         for result in [
-            DnsResult::Aaaa(Ok(vec![])),
-            DnsResult::Aaaa(Err(())),
-            DnsResult::A(Ok(vec![])),
-            DnsResult::A(Err(())),
+            DnsResult::Aaaa(Ok(vec![]), None),
+            DnsResult::Aaaa(Err(()), None),
+            DnsResult::A(Ok(vec![]), None),
+            DnsResult::A(Err(()), None),
             DnsResult::Https(Err(())),
             DnsResult::Https(Ok(vec![])),
         ] {
             assert!(!result.has_addrs());
         }
-        assert!(DnsResult::Aaaa(Ok(vec![Ipv6Addr::LOCALHOST])).has_addrs());
-        assert!(DnsResult::A(Ok(vec![Ipv4Addr::LOCALHOST])).has_addrs());
+        assert!(DnsResult::Aaaa(Ok(vec![Ipv6Addr::LOCALHOST]), None).has_addrs());
+        assert!(DnsResult::A(Ok(vec![Ipv4Addr::LOCALHOST]), None).has_addrs());
     }
 
     #[test]

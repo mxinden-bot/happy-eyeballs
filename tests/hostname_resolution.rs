@@ -494,7 +494,7 @@ fn multiple_ips_per_record() {
             (
                 Some(Input::DnsResult {
                     id: Id::from(1),
-                    result: DnsResult::Aaaa(Ok(vec![V6_ADDR, V6_ADDR_2, V6_ADDR_3])),
+                    result: DnsResult::Aaaa(Ok(vec![V6_ADDR, V6_ADDR_2, V6_ADDR_3]), None),
                 }),
                 Some(out_attempt_v6_h1_h2(Id::from(3))),
             ),
