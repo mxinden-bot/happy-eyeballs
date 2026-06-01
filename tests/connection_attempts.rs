@@ -7,39 +7,25 @@ use common::*;
 use std::{net::SocketAddr, time::Duration};
 
 use happy_eyeballs::{
-    CONNECTION_ATTEMPT_DELAY, ConnectionAttemptHttpVersions, DnsResult, Endpoint, Id, Input,
-    NetworkConfig, Output,
+    ConnectionAttemptHttpVersions, DnsResult, Endpoint, Input, NetworkConfig, Output,
 };
 
 #[test]
 fn ipv6_blackhole() {
-    let (mut now, mut he) = setup();
+    let mut s = Scenario::new();
+    let (https, aaaa, a) = (s.next_id(), s.next_id(), s.next_id());
+    let v6_attempt = s.next_id();
 
-    he.expect(
-        vec![
-            (None, Some(out_send_dns_https(Id::from(0)))),
-            (None, Some(out_send_dns_aaaa(Id::from(1)))),
-            (None, Some(out_send_dns_a(Id::from(2)))),
-            (
-                Some(in_dns_https_positive(Id::from(0))),
-                Some(out_resolution_delay()),
-            ),
-            (
-                Some(in_dns_a_positive(Id::from(2))),
-                Some(out_resolution_delay()),
-            ),
-            (
-                Some(in_dns_aaaa_positive(Id::from(1))),
-                Some(out_attempt_v6_h3(Id::from(3))),
-            ),
-        ],
-        now,
-    );
+    s.output(out_send_dns_https(https))
+        .output(out_send_dns_aaaa(aaaa))
+        .output(out_send_dns_a(a))
+        .feed(in_dns_https_positive(https), out_resolution_delay())
+        .feed(in_dns_a_positive(a), out_resolution_delay())
+        .feed(in_dns_aaaa_positive(aaaa), out_attempt_v6_h3(v6_attempt));
 
     for _ in 0..42 {
-        now += CONNECTION_ATTEMPT_DELAY;
-        let connection_attempt = he.process_output(now).unwrap().attempt().unwrap();
-        if connection_attempt.address.is_ipv4() {
+        let attempt = s.tick().process().unwrap().attempt().unwrap();
+        if attempt.address.is_ipv4() {
             return;
         }
     }
@@ -49,211 +35,121 @@ fn ipv6_blackhole() {
 
 #[test]
 fn connection_attempt_delay() {
-    let (mut now, mut he) = setup();
+    let mut s = Scenario::new();
+    let (https, aaaa, a) = (s.next_id(), s.next_id(), s.next_id());
+    let (v6_attempt, v4_attempt) = (s.next_id(), s.next_id());
 
-    he.expect(
-        vec![
-            (None, Some(out_send_dns_https(Id::from(0)))),
-            (None, Some(out_send_dns_aaaa(Id::from(1)))),
-            (None, Some(out_send_dns_a(Id::from(2)))),
-            (
-                Some(in_dns_https_positive_no_alpn(Id::from(0))),
-                Some(out_resolution_delay()),
-            ),
-            (
-                Some(in_dns_aaaa_positive(Id::from(1))),
-                Some(out_attempt_v6_h1_h2(Id::from(3))),
-            ),
-            (
-                Some(in_dns_a_positive(Id::from(2))),
-                Some(out_connection_attempt_delay()),
-            ),
-        ],
-        now,
-    );
-
-    now += CONNECTION_ATTEMPT_DELAY;
-
-    he.expect(vec![(None, Some(out_attempt_v4_h1_h2(Id::from(4))))], now);
+    s.output(out_send_dns_https(https))
+        .output(out_send_dns_aaaa(aaaa))
+        .output(out_send_dns_a(a))
+        .feed(in_dns_https_positive_no_alpn(https), out_resolution_delay())
+        .feed(in_dns_aaaa_positive(aaaa), out_attempt_v6_h1_h2(v6_attempt))
+        .feed(in_dns_a_positive(a), out_connection_attempt_delay())
+        .tick()
+        .output(out_attempt_v4_h1_h2(v4_attempt));
 }
 
 #[test]
 fn never_try_same_attempt_twice() {
-    let (mut now, mut he) = setup();
+    let mut s = Scenario::new();
+    let (https, aaaa, a) = (s.next_id(), s.next_id(), s.next_id());
+    let v6_attempt = s.next_id();
 
-    he.expect(
-        vec![
-            (None, Some(out_send_dns_https(Id::from(0)))),
-            (None, Some(out_send_dns_aaaa(Id::from(1)))),
-            (None, Some(out_send_dns_a(Id::from(2)))),
-            (
-                Some(in_dns_https_negative(Id::from(0))),
-                Some(out_resolution_delay()),
-            ),
-            (
-                Some(in_dns_a_negative(Id::from(2))),
-                Some(out_resolution_delay()),
-            ),
-            (
-                Some(in_dns_aaaa_positive(Id::from(1))),
-                Some(out_attempt_v6_h1_h2(Id::from(3))),
-            ),
-        ],
-        now,
-    );
-
-    now += CONNECTION_ATTEMPT_DELAY;
-
-    he.expect(vec![(None, None)], now);
+    s.output(out_send_dns_https(https))
+        .output(out_send_dns_aaaa(aaaa))
+        .output(out_send_dns_a(a))
+        .feed(in_dns_https_negative(https), out_resolution_delay())
+        .feed(in_dns_a_negative(a), out_resolution_delay())
+        .feed(in_dns_aaaa_positive(aaaa), out_attempt_v6_h1_h2(v6_attempt))
+        .tick()
+        .idle();
 }
 
 #[test]
 fn successful_connection_cancels_others() {
-    let (mut now, mut he) = setup();
+    let mut s = Scenario::new();
+    let (https, aaaa, a) = (s.next_id(), s.next_id(), s.next_id());
+    let (attempt_1, attempt_2, attempt_3) = (s.next_id(), s.next_id(), s.next_id());
 
-    he.expect(
-        vec![
-            (None, Some(out_send_dns_https(Id::from(0)))),
-            (None, Some(out_send_dns_aaaa(Id::from(1)))),
-            (None, Some(out_send_dns_a(Id::from(2)))),
-            (
-                Some(in_dns_https_positive_no_alpn(Id::from(0))),
-                Some(out_resolution_delay()),
-            ),
-            (
-                Some(Input::DnsResult {
-                    id: Id::from(1),
-                    result: DnsResult::Aaaa(Ok(vec![V6_ADDR, V6_ADDR_2])),
-                }),
-                Some(out_attempt_v6_h1_h2(Id::from(3))),
-            ),
-            (
-                Some(in_dns_a_positive(Id::from(2))),
-                Some(out_connection_attempt_delay()),
-            ),
-        ],
-        now,
-    );
-
-    now += CONNECTION_ATTEMPT_DELAY;
-    he.expect(
-        vec![(
-            None,
-            Some(Output::AttemptConnection {
-                id: Id::from(4),
-                endpoint: Endpoint {
-                    address: SocketAddr::new(V6_ADDR_2.into(), PORT),
-                    http_version: ConnectionAttemptHttpVersions::H2OrH1,
-                    ech_config: None,
-                },
-                is_ech_retry: false,
-            }),
-        )],
-        now,
-    );
-
-    now += CONNECTION_ATTEMPT_DELAY;
-    he.expect(vec![(None, Some(out_attempt_v4_h1_h2(Id::from(5))))], now);
-    he.expect(
-        vec![
-            (
-                Some(in_connection_result_positive(Id::from(3))),
-                Some(Output::CancelConnection { id: Id::from(4) }),
-            ),
-            (None, Some(Output::CancelConnection { id: Id::from(5) })),
-            (None, Some(Output::Succeeded)),
-        ],
-        now,
-    );
+    s.output(out_send_dns_https(https))
+        .output(out_send_dns_aaaa(aaaa))
+        .output(out_send_dns_a(a))
+        .feed(in_dns_https_positive_no_alpn(https), out_resolution_delay())
+        .feed(
+            Input::DnsResult {
+                id: aaaa,
+                result: DnsResult::Aaaa(Ok(vec![V6_ADDR, V6_ADDR_2])),
+            },
+            out_attempt_v6_h1_h2(attempt_1),
+        )
+        .feed(in_dns_a_positive(a), out_connection_attempt_delay())
+        .tick()
+        .output(Output::AttemptConnection {
+            id: attempt_2,
+            endpoint: Endpoint {
+                address: SocketAddr::new(V6_ADDR_2.into(), PORT),
+                http_version: ConnectionAttemptHttpVersions::H2OrH1,
+                ech_config: None,
+            },
+            is_ech_retry: false,
+        })
+        .tick()
+        .output(out_attempt_v4_h1_h2(attempt_3))
+        .feed(
+            in_connection_result_positive(attempt_1),
+            Output::CancelConnection { id: attempt_2 },
+        )
+        .output(Output::CancelConnection { id: attempt_3 })
+        .output(Output::Succeeded);
 }
 
 #[test]
 fn failed_connection_tries_next_immediately() {
-    let (now, mut he) = setup();
+    let mut s = Scenario::new();
+    let (https, aaaa, a) = (s.next_id(), s.next_id(), s.next_id());
+    let (v6_attempt, v4_attempt) = (s.next_id(), s.next_id());
 
-    he.expect(
-        vec![
-            (None, Some(out_send_dns_https(Id::from(0)))),
-            (None, Some(out_send_dns_aaaa(Id::from(1)))),
-            (None, Some(out_send_dns_a(Id::from(2)))),
-            (
-                Some(in_dns_https_positive_no_alpn(Id::from(0))),
-                Some(out_resolution_delay()),
-            ),
-            (
-                Some(in_dns_aaaa_positive(Id::from(1))),
-                Some(out_attempt_v6_h1_h2(Id::from(3))),
-            ),
-            (
-                Some(in_dns_a_positive(Id::from(2))),
-                Some(out_connection_attempt_delay()),
-            ),
-        ],
-        now,
-    );
-
-    he.expect(
-        vec![(
-            Some(in_connection_result_negative(Id::from(3))),
-            Some(out_attempt_v4_h1_h2(Id::from(4))),
-        )],
-        now,
-    );
+    s.output(out_send_dns_https(https))
+        .output(out_send_dns_aaaa(aaaa))
+        .output(out_send_dns_a(a))
+        .feed(in_dns_https_positive_no_alpn(https), out_resolution_delay())
+        .feed(in_dns_aaaa_positive(aaaa), out_attempt_v6_h1_h2(v6_attempt))
+        .feed(in_dns_a_positive(a), out_connection_attempt_delay())
+        .feed(
+            in_connection_result_negative(v6_attempt),
+            out_attempt_v4_h1_h2(v4_attempt),
+        );
 }
 
 #[test]
 fn successful_connection_emits_succeeded() {
-    let (now, mut he) = setup();
+    let mut s = Scenario::new();
+    let (https, aaaa, a) = (s.next_id(), s.next_id(), s.next_id());
+    let v6_attempt = s.next_id();
 
-    he.expect(
-        vec![
-            (None, Some(out_send_dns_https(Id::from(0)))),
-            (None, Some(out_send_dns_aaaa(Id::from(1)))),
-            (None, Some(out_send_dns_a(Id::from(2)))),
-            (
-                Some(in_dns_https_positive_no_alpn(Id::from(0))),
-                Some(out_resolution_delay()),
-            ),
-            (
-                Some(in_dns_aaaa_positive(Id::from(1))),
-                Some(out_attempt_v6_h1_h2(Id::from(3))),
-            ),
-            (
-                Some(in_connection_result_positive(Id::from(3))),
-                Some(Output::Succeeded),
-            ),
-        ],
-        now,
-    );
+    s.output(out_send_dns_https(https))
+        .output(out_send_dns_aaaa(aaaa))
+        .output(out_send_dns_a(a))
+        .feed(in_dns_https_positive_no_alpn(https), out_resolution_delay())
+        .feed(in_dns_aaaa_positive(aaaa), out_attempt_v6_h1_h2(v6_attempt))
+        .feed(in_connection_result_positive(v6_attempt), Output::Succeeded);
 }
 
 #[test]
 fn succeeded_keeps_emitting_succeeded() {
-    let (now, mut he) = setup();
+    let mut s = Scenario::new();
+    let (https, aaaa, a) = (s.next_id(), s.next_id(), s.next_id());
+    let v6_attempt = s.next_id();
 
-    he.expect(
-        vec![
-            (None, Some(out_send_dns_https(Id::from(0)))),
-            (None, Some(out_send_dns_aaaa(Id::from(1)))),
-            (None, Some(out_send_dns_a(Id::from(2)))),
-            (
-                Some(in_dns_https_positive_no_alpn(Id::from(0))),
-                Some(out_resolution_delay()),
-            ),
-            (
-                Some(in_dns_aaaa_positive(Id::from(1))),
-                Some(out_attempt_v6_h1_h2(Id::from(3))),
-            ),
-            (
-                Some(in_connection_result_positive(Id::from(3))),
-                Some(Output::Succeeded),
-            ),
-            // After succeeded, continue to emit Succeeded
-            (None, Some(Output::Succeeded)),
-            (None, Some(Output::Succeeded)),
-        ],
-        now,
-    );
+    s.output(out_send_dns_https(https))
+        .output(out_send_dns_aaaa(aaaa))
+        .output(out_send_dns_a(a))
+        .feed(in_dns_https_positive_no_alpn(https), out_resolution_delay())
+        .feed(in_dns_aaaa_positive(aaaa), out_attempt_v6_h1_h2(v6_attempt))
+        .feed(in_connection_result_positive(v6_attempt), Output::Succeeded)
+        // After succeeded, continue to emit Succeeded
+        .output(Output::Succeeded)
+        .output(Output::Succeeded);
 }
 
 /// The connection-attempt-delay timer reflects the time *remaining*, not the full delay.
@@ -261,90 +157,49 @@ fn succeeded_keeps_emitting_succeeded() {
 #[test]
 fn connection_attempt_delay_partial_elapsed() {
     let custom_delay = Duration::from_millis(100);
-    let (now, mut he) = setup_with_config(NetworkConfig {
+    let mut s = Scenario::with_config(NetworkConfig {
         connection_attempt_delay: custom_delay,
         ..NetworkConfig::default()
     });
+    let (https, aaaa, a) = (s.next_id(), s.next_id(), s.next_id());
+    let v6_attempt = s.next_id();
 
-    // Drive to first connection attempt at time T=now.
-    he.expect(
-        vec![
-            (None, Some(out_send_dns_https(Id::from(0)))),
-            (None, Some(out_send_dns_aaaa(Id::from(1)))),
-            (None, Some(out_send_dns_a(Id::from(2)))),
-            (
-                Some(in_dns_https_negative(Id::from(0))),
-                Some(out_resolution_delay()),
-            ),
-            (
-                Some(in_dns_aaaa_positive(Id::from(1))),
-                Some(out_attempt_v6_h1_h2(Id::from(3))),
-            ),
-        ],
-        now,
-    );
+    // Drive to first connection attempt at time T.
+    s.output(out_send_dns_https(https))
+        .output(out_send_dns_aaaa(aaaa))
+        .output(out_send_dns_a(a))
+        .feed(in_dns_https_negative(https), out_resolution_delay())
+        .feed(in_dns_aaaa_positive(aaaa), out_attempt_v6_h1_h2(v6_attempt));
 
+    // Partway through the delay, the timer reflects only the remainder.
     let elapsed = Duration::from_millis(40);
-    he.expect(
-        vec![(
-            None,
-            Some(Output::Timer {
-                duration: custom_delay - elapsed,
-            }),
-        )],
-        now + elapsed,
-    );
+    s.advance(elapsed).output(Output::Timer {
+        duration: custom_delay - elapsed,
+    });
 }
 
 #[test]
 fn cancelled_connection_result_ignored() {
-    let (mut now, mut he) = setup();
+    let mut s = Scenario::new();
+    let (https, aaaa, a) = (s.next_id(), s.next_id(), s.next_id());
+    let (v6_attempt, v4_attempt) = (s.next_id(), s.next_id());
 
-    he.expect(
-        vec![
-            (None, Some(out_send_dns_https(Id::from(0)))),
-            (None, Some(out_send_dns_aaaa(Id::from(1)))),
-            (None, Some(out_send_dns_a(Id::from(2)))),
-            (
-                Some(in_dns_https_positive_no_alpn(Id::from(0))),
-                Some(out_resolution_delay()),
-            ),
-            (
-                Some(in_dns_aaaa_positive(Id::from(1))),
-                Some(out_attempt_v6_h1_h2(Id::from(3))),
-            ),
-            (
-                Some(in_dns_a_positive(Id::from(2))),
-                Some(out_connection_attempt_delay()),
-            ),
-        ],
-        now,
-    );
-
-    now += CONNECTION_ATTEMPT_DELAY;
-
-    // Start second connection attempt.
-    he.expect(vec![(None, Some(out_attempt_v4_h1_h2(Id::from(4))))], now);
-
-    // First connection succeeds, triggering cancellation of the second.
-    he.expect(
-        vec![
-            (
-                Some(in_connection_result_positive(Id::from(3))),
-                Some(Output::CancelConnection { id: Id::from(4) }),
-            ),
-            (None, Some(Output::Succeeded)),
-        ],
-        now,
-    );
-
-    // User reports an error for the already-cancelled connection.
-    // This must not panic.
-    he.expect(
-        vec![(
-            Some(in_connection_result_negative(Id::from(4))),
-            Some(Output::Succeeded),
-        )],
-        now,
-    );
+    s.output(out_send_dns_https(https))
+        .output(out_send_dns_aaaa(aaaa))
+        .output(out_send_dns_a(a))
+        .feed(in_dns_https_positive_no_alpn(https), out_resolution_delay())
+        .feed(in_dns_aaaa_positive(aaaa), out_attempt_v6_h1_h2(v6_attempt))
+        .feed(in_dns_a_positive(a), out_connection_attempt_delay())
+        // Start second connection attempt.
+        .tick()
+        .output(out_attempt_v4_h1_h2(v4_attempt))
+        // First connection succeeds, triggering cancellation of the second.
+        .feed(
+            in_connection_result_positive(v6_attempt),
+            Output::CancelConnection { id: v4_attempt },
+        )
+        .output(Output::Succeeded)
+        // User reports an error for the already-cancelled connection.
+        // This must not panic.
+        .feed(in_connection_result_negative(v4_attempt), Output::Succeeded);
 }
