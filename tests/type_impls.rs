@@ -57,55 +57,49 @@ fn service_info_debug() {
 
 #[test]
 fn happy_eyeballs_debug() {
-    let (now, mut he) = setup();
+    let mut s = Scenario::new();
 
     // Fresh domain host: always has "target" and "port", never "dns_queries" yet.
-    let s = format!("{he:?}");
-    assert!(s.contains("target"), "missing 'target': {s}");
-    assert!(s.contains("port"), "missing 'port': {s}");
-    assert!(!s.contains("dns_queries"), "unexpected 'dns_queries': {s}");
+    let dbg = format!("{:?}", s.he());
+    assert!(dbg.contains("target"), "missing 'target': {dbg}");
+    assert!(dbg.contains("port"), "missing 'port': {dbg}");
+    assert!(!dbg.contains("dns_queries"), "unexpected 'dns_queries': {dbg}");
 
     // After first process_output, dns_queries is populated.
-    let _ = he.process_output(now);
-    let s = format!("{he:?}");
-    assert!(s.contains("dns_queries"), "missing 'dns_queries': {s}");
+    let _ = s.process();
+    let dbg = format!("{:?}", s.he());
+    assert!(dbg.contains("dns_queries"), "missing 'dns_queries': {dbg}");
 
     // Set up a hostname-based HE with an HTTPS record that provides ECH
     // config, so the connection attempt carries ECH and EchRetry is valid.
-    let (now2, mut he2) = setup();
+    let mut s2 = Scenario::new();
+    let (https, aaaa, a) = (s2.next_id(), s2.next_id(), s2.next_id());
+    let attempt = s2.next_id();
 
-    // Drive through DNS queries, feed HTTPS+ECH and AAAA to get a connection
-    // attempt that carries ECH config.
-    he2.expect(
-        vec![
-            (None, Some(out_send_dns_https(Id::from(0)))),
-            (None, Some(out_send_dns_aaaa(Id::from(1)))),
-            (None, Some(out_send_dns_a(Id::from(2)))),
-            (
-                Some(in_dns_https_positive_ech(Id::from(0))),
-                Some(out_resolution_delay()),
-            ),
-        ],
-        now2,
-    );
+    // Drive through DNS queries and feed the HTTPS+ECH record.
+    s2.output(out_send_dns_https(https))
+        .output(out_send_dns_aaaa(aaaa))
+        .output(out_send_dns_a(a))
+        .feed(in_dns_https_positive_ech(https), out_resolution_delay());
 
-    // AAAA arrives; connection attempt with ECH is emitted.
-    he2.process_input(in_dns_aaaa_positive(Id::from(1)), now2);
-    let _ = he2.process_output(now2);
-    let s = format!("{he2:?}");
+    // AAAA arrives; a connection attempt carrying ECH config is emitted.
+    let now = s2.now();
+    s2.he().process_input(in_dns_aaaa_positive(aaaa), now);
+    let _ = s2.process();
+    let dbg = format!("{:?}", s2.he());
     assert!(
-        s.contains("connection_attempts"),
-        "missing 'connection_attempts': {s}"
+        dbg.contains("connection_attempts"),
+        "missing 'connection_attempts': {dbg}"
     );
 
     // Feed EchRetry for the in-progress connection to populate ech_retries.
-    he2.process_input(
+    s2.he().process_input(
         Input::ConnectionResult {
-            id: Id::from(3),
+            id: attempt,
             result: ConnectionResult::EchRetry(EchConfig::new(vec![10, 20, 30])),
         },
-        now2,
+        now,
     );
-    let s = format!("{he2:?}");
-    assert!(s.contains("ech_retries"), "missing 'ech_retries': {s}");
+    let dbg = format!("{:?}", s2.he());
+    assert!(dbg.contains("ech_retries"), "missing 'ech_retries': {dbg}");
 }

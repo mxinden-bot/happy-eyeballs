@@ -90,6 +90,13 @@ impl Scenario {
         Self::from_parts(Instant::now(), he)
     }
 
+    /// Scenario for a custom host and [`NetworkConfig`] on [`PORT`].
+    pub fn with_host_and_config(host: &str, config: NetworkConfig) -> Self {
+        let _ = env_logger::builder().is_test(true).try_init();
+        let he = HappyEyeballs::new_with_network_config(host, PORT, config).unwrap();
+        Self::from_parts(Instant::now(), he)
+    }
+
     fn from_parts(now: Instant, he: HappyEyeballs) -> Self {
         Self {
             he,
@@ -136,6 +143,25 @@ impl Scenario {
     pub fn feed_idle(&mut self, input: Input) -> &mut Self {
         self.he.process_input(input, self.now);
         self.idle()
+    }
+
+    /// Drives the connection-attempt race: for each expected `attempt`,
+    /// advances one [`CONNECTION_ATTEMPT_DELAY`], asserts the attempt is
+    /// emitted, then asserts the next attempt-delay timer. After the last
+    /// attempt, advances once more and asserts the race is quiescent.
+    pub fn connection_attempts(&mut self, attempts: Vec<Output>) -> &mut Self {
+        for attempt in attempts {
+            self.tick()
+                .output(attempt)
+                .output(out_connection_attempt_delay());
+        }
+        self.tick().idle()
+    }
+
+    /// Processes one output at the current time without any assertion, for
+    /// the rare test that inspects the emitted value directly.
+    pub fn process(&mut self) -> Option<Output> {
+        self.he.process_output(self.now)
     }
 
     /// Current time, for the rare case a test needs it directly.
