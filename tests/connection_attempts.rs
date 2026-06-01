@@ -115,7 +115,7 @@ fn successful_connection_cancels_others() {
             (
                 Some(Input::DnsResult {
                     id: Id::from(1),
-                    result: DnsResult::Aaaa(Ok(vec![V6_ADDR, V6_ADDR_2])),
+                    result: DnsResult::Aaaa(Ok(vec![V6_ADDR, V6_ADDR_2]), None),
                 }),
                 Some(out_attempt_v6_h1_h2(Id::from(3))),
             ),
