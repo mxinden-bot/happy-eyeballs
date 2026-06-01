@@ -202,36 +202,28 @@ pub fn in_connection_result_ech_retry(id: Id) -> Input {
     }
 }
 
-pub fn out_send_dns_https(id: Id) -> Output {
+pub fn out_send_dns(id: Id, hostname: &str, record_type: DnsRecordType) -> Output {
     Output::SendDnsQuery {
         id,
-        hostname: HOSTNAME.into(),
-        record_type: DnsRecordType::Https,
+        hostname: hostname.into(),
+        record_type,
     }
+}
+
+pub fn out_send_dns_https(id: Id) -> Output {
+    out_send_dns(id, HOSTNAME, DnsRecordType::Https)
 }
 
 pub fn out_send_dns_aaaa(id: Id) -> Output {
-    Output::SendDnsQuery {
-        id,
-        hostname: HOSTNAME.into(),
-        record_type: DnsRecordType::Aaaa,
-    }
+    out_send_dns(id, HOSTNAME, DnsRecordType::Aaaa)
 }
 
 pub fn out_send_dns_svc1(id: Id) -> Output {
-    Output::SendDnsQuery {
-        id,
-        hostname: SVC1.into(),
-        record_type: DnsRecordType::Aaaa,
-    }
+    out_send_dns(id, SVC1, DnsRecordType::Aaaa)
 }
 
 pub fn out_send_dns_a(id: Id) -> Output {
-    Output::SendDnsQuery {
-        id,
-        hostname: HOSTNAME.into(),
-        record_type: DnsRecordType::A,
-    }
+    out_send_dns(id, HOSTNAME, DnsRecordType::A)
 }
 
 pub fn out_attempt_v6_h1_h2(id: Id) -> Output {
@@ -392,4 +384,26 @@ pub fn setup_with_config(config: NetworkConfig) -> (Instant, HappyEyeballs) {
     let now = Instant::now();
     let he = HappyEyeballs::new_with_network_config(HOSTNAME, PORT, config).unwrap();
     (now, he)
+}
+
+/// Assert that the next output is a DNS query for `hostname`/`record_type` with `id`.
+pub fn expect_query(
+    he: &mut HappyEyeballs,
+    now: Instant,
+    id: u64,
+    hostname: &str,
+    rt: DnsRecordType,
+) {
+    assert_eq!(
+        he.process_output(now),
+        Some(out_send_dns(Id::from(id), hostname, rt))
+    );
+}
+
+/// Assert the standard opening burst of DNS queries: HTTPS, AAAA, then A for the
+/// default `HOSTNAME` with ids 0, 1, 2.
+pub fn expect_initial_dns_queries(he: &mut HappyEyeballs, now: Instant) {
+    expect_query(he, now, 0, HOSTNAME, DnsRecordType::Https);
+    expect_query(he, now, 1, HOSTNAME, DnsRecordType::Aaaa);
+    expect_query(he, now, 2, HOSTNAME, DnsRecordType::A);
 }
