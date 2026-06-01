@@ -3,7 +3,7 @@
 use std::{
     collections::HashSet,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use happy_eyeballs::{
@@ -25,6 +25,135 @@ pub const ECH_CONFIG_BYTES: &[u8] = &[1, 2, 3, 4, 5];
 
 pub fn ech_config() -> EchConfig {
     EchConfig::new(ECH_CONFIG_BYTES.to_vec())
+}
+
+/// Sequential [`Id`] allocator for tests.
+///
+/// The state machine hands out ids from a simple incrementing counter (DNS
+/// queries first, then connection attempts). Mirroring that here lets a test
+/// bind ids to meaningful names — `let aaaa = ids.next_id();` — instead of
+/// hard-coding `Id::from(0)`, `Id::from(1)`, ...
+#[derive(Debug, Default)]
+pub struct IdSeq(u64);
+
+impl IdSeq {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns the next sequential id (`0`, `1`, `2`, ...).
+    pub fn next_id(&mut self) -> Id {
+        let id = Id::from(self.0);
+        self.0 += 1;
+        id
+    }
+}
+
+/// Fluent test driver for a [`HappyEyeballs`] state machine.
+///
+/// Owns the machine, the current time, and a sequential [`IdSeq`], so a test
+/// reads as a transcript of expected outputs and fed inputs rather than a
+/// `Vec<(Option<Input>, Option<Output>)>` with hand-numbered ids and a
+/// manually threaded `now`.
+///
+/// ```ignore
+/// let mut s = Scenario::new();
+/// let (https, aaaa, a) = (s.next_id(), s.next_id(), s.next_id());
+/// s.output(out_send_dns_https(https))
+///     .output(out_send_dns_aaaa(aaaa))
+///     .output(out_send_dns_a(a))
+///     .feed(in_dns_https_negative(https), out_resolution_delay());
+/// ```
+pub struct Scenario {
+    he: HappyEyeballs,
+    now: Instant,
+    ids: IdSeq,
+}
+
+impl Scenario {
+    /// Default-config scenario for [`HOSTNAME`]:[`PORT`].
+    pub fn new() -> Self {
+        let (now, he) = setup();
+        Self::from_parts(now, he)
+    }
+
+    /// Scenario with a custom [`NetworkConfig`].
+    pub fn with_config(config: NetworkConfig) -> Self {
+        let (now, he) = setup_with_config(config);
+        Self::from_parts(now, he)
+    }
+
+    /// Scenario for a custom host (e.g. an IP literal) on [`PORT`].
+    pub fn with_host(host: &str) -> Self {
+        let _ = env_logger::builder().is_test(true).try_init();
+        let he = HappyEyeballs::new(host, PORT).unwrap();
+        Self::from_parts(Instant::now(), he)
+    }
+
+    fn from_parts(now: Instant, he: HappyEyeballs) -> Self {
+        Self {
+            he,
+            now,
+            ids: IdSeq::new(),
+        }
+    }
+
+    /// Allocates the next sequential [`Id`] (see [`IdSeq`]).
+    pub fn next_id(&mut self) -> Id {
+        self.ids.next_id()
+    }
+
+    /// Advances time by one [`CONNECTION_ATTEMPT_DELAY`].
+    pub fn tick(&mut self) -> &mut Self {
+        self.advance(CONNECTION_ATTEMPT_DELAY)
+    }
+
+    /// Advances time by `delay`.
+    pub fn advance(&mut self, delay: Duration) -> &mut Self {
+        self.now += delay;
+        self
+    }
+
+    /// Asserts the next output is `expected`.
+    pub fn output(&mut self, expected: Output) -> &mut Self {
+        assert_eq!(Some(expected), self.he.process_output(self.now));
+        self
+    }
+
+    /// Asserts there is no further output at the current time.
+    pub fn idle(&mut self) -> &mut Self {
+        assert_eq!(None, self.he.process_output(self.now));
+        self
+    }
+
+    /// Feeds `input`, then asserts the next output is `expected`.
+    pub fn feed(&mut self, input: Input, expected: Output) -> &mut Self {
+        self.he.process_input(input, self.now);
+        self.output(expected)
+    }
+
+    /// Feeds `input` and asserts it produces no output.
+    pub fn feed_idle(&mut self, input: Input) -> &mut Self {
+        self.he.process_input(input, self.now);
+        self.idle()
+    }
+
+    /// Current time, for the rare case a test needs it directly.
+    pub fn now(&self) -> Instant {
+        self.now
+    }
+
+    /// Borrows the underlying machine for cases the builder does not cover
+    /// (e.g. driving a manual `process_output` loop).
+    pub fn he(&mut self) -> &mut HappyEyeballs {
+        &mut self.he
+    }
+}
+
+impl Default for Scenario {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 pub trait HappyEyeballsExt {
