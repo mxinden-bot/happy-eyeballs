@@ -18,7 +18,7 @@ use std::{
 
 use happy_eyeballs::{
     ConnectionResult, DnsRecordType, DnsResult, Endpoint, HappyEyeballs, HttpVersion, Id, Input,
-    NetworkConfig, Output, ServiceInfo,
+    NetworkConfig, Output,
 };
 
 /// HTTPS record `TargetName`: a CDN distinct from the origin, carrying ECH.
@@ -35,15 +35,9 @@ const CDN_A_V4: Ipv4Addr = V4_ADDR_2;
 
 /// A single ECH-bearing HTTPS record pointing at `target`.
 fn https_ech_record(target: &str) -> DnsResult {
-    DnsResult::Https(Ok(vec![ServiceInfo {
-        priority: 1,
-        target_name: target.into(),
-        alpn_http_versions: HashSet::from([HttpVersion::H2, HttpVersion::H3]),
-        ipv6_hints: vec![],
-        ipv4_hints: vec![],
-        ech_config: Some(ech_config()),
-        port: None,
-    }]))
+    DnsResult::Https(Ok(vec![
+        service_info(1, target, &[HttpVersion::H2, HttpVersion::H3]).ech(),
+    ]))
 }
 
 /// Case- and trailing-dot-insensitive name comparison, matching the crate's
