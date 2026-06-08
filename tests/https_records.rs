@@ -275,12 +275,11 @@ fn multiple_target_names() {
 ///
 /// Only the ECH-enabled ServiceInfo produces connection attempts:
 ///
-///   priority-1 bucket (SVC1, port 9443, ech): V4_2:H3, V4_2:H2
+///   priority-1 bucket (SVC1, port 9443, ech): V4_2:H3 (alpn=h3 only)
 ///   priority-2 bucket (SVC2, port 10443):     skipped (no ECH, not even resolved)
 ///   fallback   bucket (HOSTNAME):             skipped (no ECH)
 #[test]
 fn partial_ech_two_service_infos() {
-    const SVC2: &str = "svc2.example.com.";
     const SVC1_PORT: u16 = 9443;
     const SVC2_PORT: u16 = 10443;
 
@@ -342,23 +341,8 @@ fn partial_ech_two_service_infos() {
         now,
     );
 
-    now += CONNECTION_ATTEMPT_DELAY;
-    he.expect(
-        vec![(
-            None,
-            Some(Output::AttemptConnection {
-                id: Id::from(6),
-                endpoint: Endpoint {
-                    address: SocketAddr::new(V4_ADDR_2.into(), SVC1_PORT),
-                    http_version: ConnectionAttemptHttpVersions::H2,
-                    ech_config: Some(ech_config()),
-                },
-                is_ech_retry: false,
-            }),
-        )],
-        now,
-    );
-
+    // SVC1 advertises only alpn=h3, so it produces a single H3 attempt; there
+    // is no H2 attempt because H2 belongs to SVC2's record.
     now += CONNECTION_ATTEMPT_DELAY;
     he.expect(vec![(None, None)], now);
 }
@@ -374,12 +358,11 @@ fn partial_ech_two_service_infos() {
 /// HOSTNAME resolves AAAA to V6_ADDR and A to V4_ADDR.
 /// SVC1 resolves A to V4_ADDR_2. SVC2 resolves A to V4_ADDR.
 ///
-///   priority-1 bucket (SVC1, port 9443, ech):  V4_2:H3, V4_2:H2
-///   priority-2 bucket (SVC2, port 10443, ech): V4:H3, V4:H2
+///   priority-1 bucket (SVC1, port 9443, ech):  V4_2:H3 (alpn=h3 only)
+///   priority-2 bucket (SVC2, port 10443, ech): V4:H2 (alpn=h2 only)
 ///   fallback   bucket (HOSTNAME):              skipped (no ECH)
 #[test]
 fn both_service_infos_have_ech_no_origin_fallback() {
-    const SVC2: &str = "svc2.example.com.";
     const SVC1_PORT: u16 = 9443;
     const SVC2_PORT: u16 = 10443;
 
@@ -464,33 +447,15 @@ fn both_service_infos_have_ech_no_origin_fallback() {
         now,
     );
 
-    // Both SVC1 and SVC2 produce attempts (both have ECH).
-    // Origin fallback is skipped — no ECH on the origin.
+    // Both SVC1 and SVC2 produce attempts (both have ECH), each using only its
+    // own record's ALPN: SVC1 is H3-only, SVC2 is H2-only. Origin fallback is
+    // skipped — no ECH on the origin.
     he.expect_connection_attempts(
         &mut now,
         vec![
-            // priority=1 (SVC1, port 9443, ech)
+            // priority=2 (SVC2, port 10443, ech, alpn=h2)
             Output::AttemptConnection {
                 id: Id::from(8),
-                endpoint: Endpoint {
-                    address: SocketAddr::new(V4_ADDR_2.into(), SVC1_PORT),
-                    http_version: ConnectionAttemptHttpVersions::H2,
-                    ech_config: Some(ech_config()),
-                },
-                is_ech_retry: false,
-            },
-            // priority=2 (SVC2, port 10443, ech)
-            Output::AttemptConnection {
-                id: Id::from(9),
-                endpoint: Endpoint {
-                    address: SocketAddr::new(V4_ADDR.into(), SVC2_PORT),
-                    http_version: ConnectionAttemptHttpVersions::H3,
-                    ech_config: Some(ech_config()),
-                },
-                is_ech_retry: false,
-            },
-            Output::AttemptConnection {
-                id: Id::from(10),
                 endpoint: Endpoint {
                     address: SocketAddr::new(V4_ADDR.into(), SVC2_PORT),
                     http_version: ConnectionAttemptHttpVersions::H2,
@@ -500,6 +465,216 @@ fn both_service_infos_have_ech_no_origin_fallback() {
             },
         ],
     );
+}
+
+/// Two HTTPS records steering to different targets advertise different ALPNs:
+/// the priority-1 target is h3-only, the priority-2 target is h2-only. Each
+/// target's resolved addresses must be attempted with that record's own ALPN,
+/// never the union of ALPNs across records. The origin fallback uses the
+/// default H2OrH1.
+///
+/// ```dns
+/// example.com       HTTPS 1 svc1.example.com. alpn="h3"
+/// example.com       HTTPS 2 svc2.example.com. alpn="h2"
+/// svc1.example.com. AAAA  2001:db8::2
+/// svc2.example.com. AAAA  2001:db8::3
+/// example.com       AAAA  2001:db8::1
+/// ```
+///
+/// Expected attempts:
+///   priority-1 bucket (svc1): V6_2:H3   (alpn=h3 only, no H2)
+///   priority-2 bucket (svc2): V6_3:H2   (alpn=h2 only, no H3)
+///   fallback   bucket:        V6:H2OrH1 (origin default)
+#[test]
+fn per_record_alpn_not_unioned_across_records() {
+    let (mut now, mut he) = setup();
+
+    expect_initial_dns_queries(&mut he, now);
+    he.expect(
+        vec![
+            (
+                Some(Input::DnsResult {
+                    id: Id::from(0),
+                    result: DnsResult::Https(Ok(vec![
+                        service_info(1, SVC1, &[HttpVersion::H3]),
+                        service_info(2, SVC2, &[HttpVersion::H2]),
+                    ])),
+                }),
+                Some(out_send_dns(Id::from(3), SVC1, DnsRecordType::Aaaa)),
+            ),
+            (
+                None,
+                Some(out_send_dns(Id::from(4), SVC1, DnsRecordType::A)),
+            ),
+            (
+                None,
+                Some(out_send_dns(Id::from(5), SVC2, DnsRecordType::Aaaa)),
+            ),
+            (
+                None,
+                Some(out_send_dns(Id::from(6), SVC2, DnsRecordType::A)),
+            ),
+            (None, Some(out_resolution_delay())),
+            // svc1 (alpn=h3) AAAA arrives -> first attempt is H3-only.
+            (
+                Some(Input::DnsResult {
+                    id: Id::from(3),
+                    result: DnsResult::Aaaa(Ok(vec![V6_ADDR_2]), None),
+                }),
+                Some(out_attempt(
+                    Id::from(7),
+                    V6_ADDR_2.into(),
+                    PORT,
+                    ConnectionAttemptHttpVersions::H3,
+                )),
+            ),
+            (
+                Some(Input::DnsResult {
+                    id: Id::from(4),
+                    result: DnsResult::A(Err(()), None),
+                }),
+                Some(out_connection_attempt_delay()),
+            ),
+            (
+                Some(Input::DnsResult {
+                    id: Id::from(5),
+                    result: DnsResult::Aaaa(Ok(vec![V6_ADDR_3]), None),
+                }),
+                Some(out_connection_attempt_delay()),
+            ),
+            (
+                Some(Input::DnsResult {
+                    id: Id::from(6),
+                    result: DnsResult::A(Err(()), None),
+                }),
+                Some(out_connection_attempt_delay()),
+            ),
+            (
+                Some(in_dns_aaaa_positive(Id::from(1))),
+                Some(out_connection_attempt_delay()),
+            ),
+            (
+                Some(in_dns_a_negative(Id::from(2))),
+                Some(out_connection_attempt_delay()),
+            ),
+        ],
+        now,
+    );
+
+    he.expect_connection_attempts(
+        &mut now,
+        vec![
+            // svc2 (alpn=h2): H2-only, no spurious H3 from svc1's record.
+            out_attempt(
+                Id::from(8),
+                V6_ADDR_3.into(),
+                PORT,
+                ConnectionAttemptHttpVersions::H2,
+            ),
+            // origin fallback: default H2OrH1.
+            out_attempt_v6_h1_h2(Id::from(9)),
+        ],
+    );
+}
+
+/// A ServiceMode record with no ALPN carries no usable protocol. Assembling the
+/// SVCB ALPN set -- including adding the scheme default ("http/1.1") when no
+/// "alpn" is present -- is the caller's responsibility per RFC 9460 Section
+/// 7.1.1, so such a record contributes no endpoints here, and in particular it
+/// never inherits a sibling record's ALPN. A priority-1 record advertises
+/// `alpn=h3` and a priority-2 record carries no ALPN.
+///
+/// ```dns
+/// example.com       HTTPS 1 svc1.example.com. alpn="h3"
+/// example.com       HTTPS 2 svc2.example.com.            (no alpn)
+/// svc1.example.com. AAAA  2001:db8::2
+/// svc2.example.com. AAAA  2001:db8::3
+/// example.com       AAAA  2001:db8::1
+/// ```
+///
+/// Expected attempts:
+///   priority-1 bucket (svc1): V6_2:H3   (alpn=h3)
+///   priority-2 bucket (svc2): none      (no alpn -> no usable protocol)
+///   fallback   bucket:        V6:H2OrH1 (origin default)
+#[test]
+fn record_without_alpn_contributes_no_endpoints() {
+    let (mut now, mut he) = setup();
+
+    expect_initial_dns_queries(&mut he, now);
+    he.expect(
+        vec![
+            (
+                Some(Input::DnsResult {
+                    id: Id::from(0),
+                    result: DnsResult::Https(Ok(vec![
+                        service_info(1, SVC1, &[HttpVersion::H3]),
+                        service_info(2, SVC2, &[]),
+                    ])),
+                }),
+                Some(out_send_dns(Id::from(3), SVC1, DnsRecordType::Aaaa)),
+            ),
+            (
+                None,
+                Some(out_send_dns(Id::from(4), SVC1, DnsRecordType::A)),
+            ),
+            (
+                None,
+                Some(out_send_dns(Id::from(5), SVC2, DnsRecordType::Aaaa)),
+            ),
+            (
+                None,
+                Some(out_send_dns(Id::from(6), SVC2, DnsRecordType::A)),
+            ),
+            (None, Some(out_resolution_delay())),
+            // svc1 (alpn=h3) AAAA -> first attempt is H3.
+            (
+                Some(Input::DnsResult {
+                    id: Id::from(3),
+                    result: DnsResult::Aaaa(Ok(vec![V6_ADDR_2]), None),
+                }),
+                Some(out_attempt(
+                    Id::from(7),
+                    V6_ADDR_2.into(),
+                    PORT,
+                    ConnectionAttemptHttpVersions::H3,
+                )),
+            ),
+            (
+                Some(Input::DnsResult {
+                    id: Id::from(4),
+                    result: DnsResult::A(Err(()), None),
+                }),
+                Some(out_connection_attempt_delay()),
+            ),
+            (
+                Some(Input::DnsResult {
+                    id: Id::from(5),
+                    result: DnsResult::Aaaa(Ok(vec![V6_ADDR_3]), None),
+                }),
+                Some(out_connection_attempt_delay()),
+            ),
+            (
+                Some(Input::DnsResult {
+                    id: Id::from(6),
+                    result: DnsResult::A(Err(()), None),
+                }),
+                Some(out_connection_attempt_delay()),
+            ),
+            (
+                Some(in_dns_aaaa_positive(Id::from(1))),
+                Some(out_connection_attempt_delay()),
+            ),
+            (
+                Some(in_dns_a_negative(Id::from(2))),
+                Some(out_connection_attempt_delay()),
+            ),
+        ],
+        now,
+    );
+
+    // svc2 has no ALPN, so it produces no endpoints (its resolved V6_ADDR_3 is
+    // never attempted). Only svc1's H3 attempt and the origin fallback remain.
+    he.expect_connection_attempts(&mut now, vec![out_attempt_v6_h1_h2(Id::from(8))]);
 }
 
 /// Partial ECH with an alt-svc record on the origin. Both alt-svc and origin
@@ -514,13 +689,12 @@ fn both_service_infos_have_ech_no_origin_fallback() {
 /// HOSTNAME resolves AAAA to V6_ADDR and A to V4_ADDR.
 /// SVC1 resolves A to V4_ADDR_2.
 ///
-///   priority-1 bucket (SVC1, port 9443, ech): V4_2:H3, V4_2:H2
+///   priority-1 bucket (SVC1, port 9443, ech): V4_2:H3 (alpn=h3 only)
 ///   priority-2 bucket (SVC2, port 10443):     skipped (no ECH, not resolved)
 ///   alt-svc    bucket (port 8443):            skipped (no ECH)
 ///   fallback   bucket (HOSTNAME, port 443):   skipped (no ECH)
 #[test]
 fn partial_ech_with_alt_svc() {
-    const SVC2: &str = "svc2.example.com.";
     const SVC1_PORT: u16 = 9443;
     const SVC2_PORT: u16 = 10443;
     const ALT_SVC_PORT: u16 = 8443;
@@ -590,24 +764,8 @@ fn partial_ech_with_alt_svc() {
         now,
     );
 
-    // Only SVC1 (with ECH). Alt-svc, SVC2, and fallback all skipped.
-    now += CONNECTION_ATTEMPT_DELAY;
-    he.expect(
-        vec![(
-            None,
-            Some(Output::AttemptConnection {
-                id: Id::from(6),
-                endpoint: Endpoint {
-                    address: SocketAddr::new(V4_ADDR_2.into(), SVC1_PORT),
-                    http_version: ConnectionAttemptHttpVersions::H2,
-                    ech_config: Some(ech_config()),
-                },
-                is_ech_retry: false,
-            }),
-        )],
-        now,
-    );
-
+    // Only SVC1 (with ECH), and it advertises only alpn=h3, so a single H3
+    // attempt. Alt-svc, SVC2, and fallback all skipped.
     now += CONNECTION_ATTEMPT_DELAY;
     he.expect(vec![(None, None)], now);
 }

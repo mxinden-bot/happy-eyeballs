@@ -343,7 +343,9 @@ impl ServiceInfo {
         // `None` if no AAAA response has been received yet; `Some(addrs)`
         // once an answer (positive or negative) has arrived.
         ipv6_addrs: Option<&[Ipv6Addr]>,
-        http_versions: &HashSet<ConnectionAttemptHttpVersions>,
+        // The HTTP versions the client allows; used to filter this record's own
+        // ALPNs.
+        enabled_http_versions: &HttpVersions,
         ech_enabled: bool,
     ) -> Vec<Endpoint> {
         let port = self.port.unwrap_or(port);
@@ -368,11 +370,19 @@ impl ServiceInfo {
             Some(_) => &[],
         };
 
-        let hint_http_versions: HashSet<ConnectionAttemptHttpVersions> =
-            ConnectionAttemptHttpVersions::from_http_versions(&self.alpn_http_versions)
-                .intersection(http_versions)
-                .cloned()
-                .collect();
+        // Each ServiceMode record's ALPN SvcParam lists the protocols available
+        // at its own TargetName, so use only this record's ALPNs, never another
+        // record's. Assembling the "SVCB ALPN set" -- including adding the
+        // scheme default ("http/1.1" for "https") when no "alpn" is present --
+        // is the caller's responsibility when interpreting the record (RFC 9460
+        // Section 7.1.1). A record that still carries no ALPN here is not usable
+        // (a "no-default-alpn" record without "alpn" is not even self-consistent,
+        // Section 2.4.3) and yields no endpoints.
+        //
+        // <https://www.rfc-editor.org/rfc/rfc9460#section-7.1.1>
+        let mut versions = self.alpn_http_versions.clone();
+        enabled_http_versions.filter_disabled(&mut versions);
+        let http_versions = ConnectionAttemptHttpVersions::from_http_versions(&versions);
 
         let hints = hint_v6
             .iter()
@@ -382,13 +392,11 @@ impl ServiceInfo {
             .flat_map(|ip| {
                 // TODO: way around allocation?
                 let ech_config = ech_enabled.then(|| self.ech_config.clone()).flatten();
-                hint_http_versions
-                    .iter()
-                    .map(move |&http_version| Endpoint {
-                        address: SocketAddr::new(ip, port),
-                        http_version,
-                        ech_config: ech_config.clone(),
-                    })
+                http_versions.iter().map(move |&http_version| Endpoint {
+                    address: SocketAddr::new(ip, port),
+                    http_version,
+                    ech_config: ech_config.clone(),
+                })
             });
 
         let addrs = ipv6_addrs
@@ -500,6 +508,21 @@ pub struct HttpVersions {
     pub h2: bool,
     /// Whether HTTP/3 is enabled.
     pub h3: bool,
+}
+
+impl HttpVersions {
+    /// Remove the [`HttpVersion`]s disabled by this configuration from `versions`.
+    fn filter_disabled(&self, versions: &mut HashSet<HttpVersion>) {
+        if !self.h3 {
+            versions.remove(&HttpVersion::H3);
+        }
+        if !self.h2 {
+            versions.remove(&HttpVersion::H2);
+        }
+        if !self.h1 {
+            versions.remove(&HttpVersion::H1);
+        }
+    }
 }
 
 impl Default for HttpVersions {
@@ -1241,7 +1264,6 @@ impl HappyEyeballs {
         service_infos.sort_by_key(|i| i.priority);
 
         // build a sorted endpoints per ServiceInfo.
-        let http_versions = self.https_record_http_versions();
         let mut endpoints: Vec<Endpoint> = Vec::new();
         for info in &service_infos {
             let ipv4_addrs: Option<&[Ipv4Addr]> =
@@ -1268,7 +1290,7 @@ impl HappyEyeballs {
                 self.port,
                 ipv4_addrs,
                 ipv6_addrs,
-                &http_versions,
+                &self.network_config.http_versions,
                 self.network_config.ech,
             );
             bucket.sort_by(|a, b| a.cmp_with_config(b, &self.network_config));
@@ -1403,29 +1425,9 @@ impl HappyEyeballs {
     /// Default H2/H1, filtered by network config.
     fn ip_host_http_versions(&self) -> HashSet<ConnectionAttemptHttpVersions> {
         let mut http_versions = HashSet::from([HttpVersion::H2, HttpVersion::H1]);
-        self.filter_disabled_http_versions(&mut http_versions);
-        ConnectionAttemptHttpVersions::from_http_versions(&http_versions)
-    }
-
-    /// HTTP versions for HTTPS record (ServiceInfo) endpoints.
-    ///
-    /// Uses ALPNs from HTTPS records. Falls back to H2/H1 when
-    /// HTTPS records specify no versions. Filtered by network config.
-    fn https_record_http_versions(&self) -> HashSet<ConnectionAttemptHttpVersions> {
-        let mut http_versions = HashSet::new();
-
-        http_versions.extend(
-            self.usable_service_infos()
-                .iter()
-                .flat_map(|i| i.alpn_http_versions.iter().cloned()),
-        );
-
-        if http_versions.is_empty() {
-            http_versions.insert(HttpVersion::H2);
-            http_versions.insert(HttpVersion::H1);
-        }
-
-        self.filter_disabled_http_versions(&mut http_versions);
+        self.network_config
+            .http_versions
+            .filter_disabled(&mut http_versions);
         ConnectionAttemptHttpVersions::from_http_versions(&http_versions)
     }
 
@@ -1465,18 +1467,6 @@ impl HappyEyeballs {
         }
 
         pairs
-    }
-
-    fn filter_disabled_http_versions(&self, http_versions: &mut HashSet<HttpVersion>) {
-        if !self.network_config.http_versions.h3 {
-            http_versions.remove(&HttpVersion::H3);
-        }
-        if !self.network_config.http_versions.h2 {
-            http_versions.remove(&HttpVersion::H2);
-        }
-        if !self.network_config.http_versions.h1 {
-            http_versions.remove(&HttpVersion::H1);
-        }
     }
 
     /// Whether to move on to the connection attempt phase based on the received
