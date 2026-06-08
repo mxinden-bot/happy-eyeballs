@@ -13,6 +13,7 @@ use happy_eyeballs::{
 
 pub const HOSTNAME: &str = "example.com";
 pub const SVC1: &str = "svc1.example.com.";
+pub const SVC2: &str = "svc2.example.com.";
 pub const PORT: u16 = 443;
 pub const CUSTOM_PORT: u16 = 8443;
 pub const V6_ADDR: Ipv6Addr = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1);
