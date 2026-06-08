@@ -3,15 +3,12 @@
 mod common;
 use common::*;
 
-use std::{
-    collections::HashSet,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
-};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use happy_eyeballs::{
     AltSvc, CONNECTION_ATTEMPT_DELAY, ConnectionAttemptHttpVersions, ConnectionResult,
     DnsRecordType, DnsResult, EchConfig, Endpoint, FailureReason, HttpVersion, Id, Input,
-    IpPreference, NetworkConfig, Output, RESOLUTION_DELAY, ServiceInfo,
+    IpPreference, NetworkConfig, Output, RESOLUTION_DELAY,
 };
 
 #[test]
@@ -26,15 +23,11 @@ fn ech_config_propagated_to_endpoint() {
         vec![(
             Some(Input::DnsResult {
                 id: Id::from(0),
-                result: DnsResult::Https(Ok(vec![ServiceInfo {
-                    priority: 1,
-                    target_name: HOSTNAME.into(),
-                    alpn_http_versions: HashSet::from([HttpVersion::H3, HttpVersion::H2]),
-                    ipv6_hints: vec![V6_ADDR],
-                    ipv4_hints: vec![],
-                    ech_config: Some(ech_config()),
-                    port: None,
-                }])),
+                result: DnsResult::Https(Ok(vec![
+                    service_info(1, HOSTNAME, &[HttpVersion::H3, HttpVersion::H2])
+                        .ipv6_hints(vec![V6_ADDR])
+                        .ech(),
+                ])),
             }),
             Some(out_resolution_delay()),
         )],
@@ -120,15 +113,11 @@ fn hints_discarded_on_negative_answer() {
                 (
                     Some(Input::DnsResult {
                         id: Id::from(0),
-                        result: DnsResult::Https(Ok(vec![ServiceInfo {
-                            priority: 1,
-                            target_name: HOSTNAME.into(),
-                            alpn_http_versions: HashSet::from([HttpVersion::H3, HttpVersion::H2]),
-                            ipv6_hints: case.ipv6_hints,
-                            ipv4_hints: case.ipv4_hints,
-                            ech_config: None,
-                            port: None,
-                        }])),
+                        result: DnsResult::Https(Ok(vec![
+                            service_info(1, HOSTNAME, &[HttpVersion::H3, HttpVersion::H2])
+                                .ipv6_hints(case.ipv6_hints)
+                                .ipv4_hints(case.ipv4_hints),
+                        ])),
                     }),
                     Some(case.attempt_1),
                 ),
@@ -171,16 +160,12 @@ fn ech_disabled() {
             (
                 Some(Input::DnsResult {
                     id: Id::from(0),
-                    result: DnsResult::Https(Ok(vec![ServiceInfo {
-                        priority: 1,
-                        target_name: HOSTNAME.into(),
-                        // Only H3 in ALPN — fallback bucket uses H2OrH1 by default.
-                        alpn_http_versions: HashSet::from([HttpVersion::H3]),
-                        ipv6_hints: vec![V6_ADDR],
-                        ipv4_hints: vec![],
-                        ech_config: Some(ech_config()),
-                        port: None,
-                    }])),
+                    // Only H3 in ALPN — fallback bucket uses H2OrH1 by default.
+                    result: DnsResult::Https(Ok(vec![
+                        service_info(1, HOSTNAME, &[HttpVersion::H3])
+                            .ipv6_hints(vec![V6_ADDR])
+                            .ech(),
+                    ])),
                 }),
                 // HTTPS bucket: V6:H3, but ECH stripped.
                 Some(Output::AttemptConnection {
@@ -222,15 +207,9 @@ fn ech_config_from_https_applies_to_aaaa() {
             (
                 Some(Input::DnsResult {
                     id: Id::from(0),
-                    result: DnsResult::Https(Ok(vec![ServiceInfo {
-                        priority: 1,
-                        target_name: HOSTNAME.into(),
-                        alpn_http_versions: HashSet::from([HttpVersion::H3, HttpVersion::H2]),
-                        ipv6_hints: vec![],
-                        ipv4_hints: vec![],
-                        ech_config: Some(ech_config()),
-                        port: None,
-                    }])),
+                    result: DnsResult::Https(Ok(vec![
+                        service_info(1, HOSTNAME, &[HttpVersion::H3, HttpVersion::H2]).ech(),
+                    ])),
                 }),
                 Some(out_resolution_delay()),
             ),
@@ -314,24 +293,10 @@ fn partial_ech_two_service_infos() {
                 Some(Input::DnsResult {
                     id: Id::from(0),
                     result: DnsResult::Https(Ok(vec![
-                        ServiceInfo {
-                            priority: 1,
-                            target_name: SVC1.into(),
-                            alpn_http_versions: HashSet::from([HttpVersion::H3]),
-                            ipv6_hints: vec![],
-                            ipv4_hints: vec![],
-                            ech_config: Some(ech_config()),
-                            port: Some(SVC1_PORT),
-                        },
-                        ServiceInfo {
-                            priority: 2,
-                            target_name: SVC2.into(),
-                            alpn_http_versions: HashSet::from([HttpVersion::H2]),
-                            ipv6_hints: vec![],
-                            ipv4_hints: vec![],
-                            ech_config: None,
-                            port: Some(SVC2_PORT),
-                        },
+                        service_info(1, SVC1, &[HttpVersion::H3])
+                            .ech()
+                            .port(SVC1_PORT),
+                        service_info(2, SVC2, &[HttpVersion::H2]).port(SVC2_PORT),
                     ])),
                 }),
                 // Only SVC1 gets DNS queries — SVC2 is skipped (no ECH)
@@ -427,24 +392,12 @@ fn both_service_infos_have_ech_no_origin_fallback() {
                 Some(Input::DnsResult {
                     id: Id::from(0),
                     result: DnsResult::Https(Ok(vec![
-                        ServiceInfo {
-                            priority: 1,
-                            target_name: SVC1.into(),
-                            alpn_http_versions: HashSet::from([HttpVersion::H3]),
-                            ipv6_hints: vec![],
-                            ipv4_hints: vec![],
-                            ech_config: Some(ech_config()),
-                            port: Some(SVC1_PORT),
-                        },
-                        ServiceInfo {
-                            priority: 2,
-                            target_name: SVC2.into(),
-                            alpn_http_versions: HashSet::from([HttpVersion::H2]),
-                            ipv6_hints: vec![],
-                            ipv4_hints: vec![],
-                            ech_config: Some(ech_config()),
-                            port: Some(SVC2_PORT),
-                        },
+                        service_info(1, SVC1, &[HttpVersion::H3])
+                            .ech()
+                            .port(SVC1_PORT),
+                        service_info(2, SVC2, &[HttpVersion::H2])
+                            .ech()
+                            .port(SVC2_PORT),
                     ])),
                 }),
                 // Both SVC1 and SVC2 get DNS queries (both have ECH)
@@ -589,24 +542,10 @@ fn partial_ech_with_alt_svc() {
                 Some(Input::DnsResult {
                     id: Id::from(0),
                     result: DnsResult::Https(Ok(vec![
-                        ServiceInfo {
-                            priority: 1,
-                            target_name: SVC1.into(),
-                            alpn_http_versions: HashSet::from([HttpVersion::H3]),
-                            ipv6_hints: vec![],
-                            ipv4_hints: vec![],
-                            ech_config: Some(ech_config()),
-                            port: Some(SVC1_PORT),
-                        },
-                        ServiceInfo {
-                            priority: 2,
-                            target_name: SVC2.into(),
-                            alpn_http_versions: HashSet::from([HttpVersion::H2]),
-                            ipv6_hints: vec![],
-                            ipv4_hints: vec![],
-                            ech_config: None,
-                            port: Some(SVC2_PORT),
-                        },
+                        service_info(1, SVC1, &[HttpVersion::H3])
+                            .ech()
+                            .port(SVC1_PORT),
+                        service_info(2, SVC2, &[HttpVersion::H2]).port(SVC2_PORT),
                     ])),
                 }),
                 // Only SVC1 gets DNS queries — SVC2 skipped (no ECH)
@@ -687,15 +626,12 @@ mod https_port_svcparam_overrides_port_for {
             vec![(
                 Some(Input::DnsResult {
                     id: Id::from(0),
-                    result: DnsResult::Https(Ok(vec![ServiceInfo {
-                        priority: 1,
-                        target_name: HOSTNAME.into(),
-                        alpn_http_versions: HashSet::from([HttpVersion::H3, HttpVersion::H2]),
-                        ipv6_hints: vec![V6_ADDR],
-                        ipv4_hints,
-                        ech_config: None,
-                        port: Some(CUSTOM_PORT),
-                    }])),
+                    result: DnsResult::Https(Ok(vec![
+                        service_info(1, HOSTNAME, &[HttpVersion::H3, HttpVersion::H2])
+                            .ipv6_hints(vec![V6_ADDR])
+                            .ipv4_hints(ipv4_hints)
+                            .port(CUSTOM_PORT),
+                    ])),
                 }),
                 Some(out_resolution_delay()),
             )],
@@ -733,15 +669,10 @@ fn https_port_svcparam_applies_to_resolved_a_and_aaaa() {
             (
                 Some(Input::DnsResult {
                     id: Id::from(0),
-                    result: DnsResult::Https(Ok(vec![ServiceInfo {
-                        priority: 1,
-                        target_name: HOSTNAME.into(),
-                        alpn_http_versions: HashSet::from([HttpVersion::H3, HttpVersion::H2]),
-                        ipv6_hints: vec![],
-                        ipv4_hints: vec![],
-                        ech_config: None,
-                        port: Some(CUSTOM_PORT),
-                    }])),
+                    result: DnsResult::Https(Ok(vec![
+                        service_info(1, HOSTNAME, &[HttpVersion::H3, HttpVersion::H2])
+                            .port(CUSTOM_PORT),
+                    ])),
                 }),
                 Some(out_resolution_delay()),
             ),
@@ -775,15 +706,10 @@ fn https_port_svcparam_applies_but_fallbacks_follow() {
             (
                 Some(Input::DnsResult {
                     id: Id::from(0),
-                    result: DnsResult::Https(Ok(vec![ServiceInfo {
-                        priority: 1,
-                        target_name: HOSTNAME.into(),
-                        alpn_http_versions: HashSet::from([HttpVersion::H3, HttpVersion::H2]),
-                        ipv6_hints: vec![],
-                        ipv4_hints: vec![],
-                        ech_config: None,
-                        port: Some(CUSTOM_PORT),
-                    }])),
+                    result: DnsResult::Https(Ok(vec![
+                        service_info(1, HOSTNAME, &[HttpVersion::H3, HttpVersion::H2])
+                            .port(CUSTOM_PORT),
+                    ])),
                 }),
                 Some(out_resolution_delay()),
             ),
@@ -862,24 +788,8 @@ fn https_two_service_infos_with_different_ports() {
                 Some(Input::DnsResult {
                     id: Id::from(0),
                     result: DnsResult::Https(Ok(vec![
-                        ServiceInfo {
-                            priority: 1,
-                            target_name: HOSTNAME.into(),
-                            alpn_http_versions: HashSet::from([HttpVersion::H3, HttpVersion::H2]),
-                            ipv6_hints: vec![],
-                            ipv4_hints: vec![],
-                            ech_config: None,
-                            port: Some(PORT_1),
-                        },
-                        ServiceInfo {
-                            priority: 2,
-                            target_name: HOSTNAME.into(),
-                            alpn_http_versions: HashSet::from([HttpVersion::H3, HttpVersion::H2]),
-                            ipv6_hints: vec![],
-                            ipv4_hints: vec![],
-                            ech_config: None,
-                            port: Some(PORT_2),
-                        },
+                        service_info(1, HOSTNAME, &[HttpVersion::H3, HttpVersion::H2]).port(PORT_1),
+                        service_info(2, HOSTNAME, &[HttpVersion::H3, HttpVersion::H2]).port(PORT_2),
                     ])),
                 }),
                 Some(out_resolution_delay()),
@@ -990,24 +900,8 @@ fn https_svc1_addresses_trigger_additional_attempts() {
                 Some(Input::DnsResult {
                     id: Id::from(0),
                     result: DnsResult::Https(Ok(vec![
-                        ServiceInfo {
-                            priority: 1,
-                            target_name: HOSTNAME.into(),
-                            alpn_http_versions: HashSet::from([HttpVersion::H2, HttpVersion::H3]),
-                            ipv6_hints: vec![],
-                            ipv4_hints: vec![],
-                            ech_config: None,
-                            port: None,
-                        },
-                        ServiceInfo {
-                            priority: 2,
-                            target_name: SVC1.into(),
-                            alpn_http_versions: HashSet::from([HttpVersion::H2, HttpVersion::H3]),
-                            ipv6_hints: vec![],
-                            ipv4_hints: vec![],
-                            ech_config: None,
-                            port: None,
-                        },
+                        service_info(1, HOSTNAME, &[HttpVersion::H2, HttpVersion::H3]),
+                        service_info(2, SVC1, &[HttpVersion::H2, HttpVersion::H3]),
                     ])),
                 }),
                 Some(out_send_dns(Id::from(3), SVC1, DnsRecordType::Aaaa)),
@@ -1104,15 +998,10 @@ fn https_port_takes_precedence_over_alt_svc_port() {
             (
                 Some(Input::DnsResult {
                     id: Id::from(0),
-                    result: DnsResult::Https(Ok(vec![ServiceInfo {
-                        priority: 1,
-                        target_name: HOSTNAME.into(),
-                        alpn_http_versions: HashSet::from([HttpVersion::H3, HttpVersion::H2]),
-                        ipv6_hints: vec![],
-                        ipv4_hints: vec![],
-                        ech_config: None,
-                        port: Some(HTTPS_PORT),
-                    }])),
+                    result: DnsResult::Https(Ok(vec![
+                        service_info(1, HOSTNAME, &[HttpVersion::H3, HttpVersion::H2])
+                            .port(HTTPS_PORT),
+                    ])),
                 }),
                 Some(out_resolution_delay()),
             ),
@@ -1214,15 +1103,7 @@ fn target_name_redirect_addresses_used_in_connection_attempts() {
             (
                 Some(Input::DnsResult {
                     id: Id::from(0),
-                    result: DnsResult::Https(Ok(vec![ServiceInfo {
-                        priority: 1,
-                        target_name: SVC1.into(),
-                        alpn_http_versions: HashSet::from([HttpVersion::H3]),
-                        ipv6_hints: vec![],
-                        ipv4_hints: vec![],
-                        ech_config: None,
-                        port: None,
-                    }])),
+                    result: DnsResult::Https(Ok(vec![service_info(1, SVC1, &[HttpVersion::H3])])),
                 }),
                 // Follow-up DNS for the redirected target name
                 Some(out_send_dns(Id::from(3), SVC1, DnsRecordType::Aaaa)),
@@ -1316,15 +1197,9 @@ fn https_fallback_uses_default_http_versions() {
             (
                 Some(Input::DnsResult {
                     id: Id::from(0),
-                    result: DnsResult::Https(Ok(vec![ServiceInfo {
-                        priority: 1,
-                        target_name: HOSTNAME.into(),
-                        alpn_http_versions: HashSet::from([HttpVersion::H3]),
-                        ipv6_hints: vec![],
-                        ipv4_hints: vec![],
-                        ech_config: None,
-                        port: Some(CUSTOM_PORT),
-                    }])),
+                    result: DnsResult::Https(Ok(vec![
+                        service_info(1, HOSTNAME, &[HttpVersion::H3]).port(CUSTOM_PORT),
+                    ])),
                 }),
                 Some(out_resolution_delay()),
             ),
@@ -1366,15 +1241,9 @@ fn ech_retry_same_endpoint() {
             (
                 Some(Input::DnsResult {
                     id: Id::from(0),
-                    result: DnsResult::Https(Ok(vec![ServiceInfo {
-                        priority: 1,
-                        target_name: HOSTNAME.into(),
-                        alpn_http_versions: HashSet::from([HttpVersion::H2]),
-                        ipv6_hints: vec![],
-                        ipv4_hints: vec![],
-                        ech_config: Some(ech_config()),
-                        port: None,
-                    }])),
+                    result: DnsResult::Https(Ok(vec![
+                        service_info(1, HOSTNAME, &[HttpVersion::H2]).ech(),
+                    ])),
                 }),
                 Some(out_resolution_delay()),
             ),
@@ -1432,15 +1301,9 @@ fn ech_retry_without_ech_sets_flag() {
             (
                 Some(Input::DnsResult {
                     id: Id::from(0),
-                    result: DnsResult::Https(Ok(vec![ServiceInfo {
-                        priority: 1,
-                        target_name: HOSTNAME.into(),
-                        alpn_http_versions: HashSet::from([HttpVersion::H2]),
-                        ipv6_hints: vec![],
-                        ipv4_hints: vec![],
-                        ech_config: Some(ech_config()),
-                        port: None,
-                    }])),
+                    result: DnsResult::Https(Ok(vec![
+                        service_info(1, HOSTNAME, &[HttpVersion::H2]).ech(),
+                    ])),
                 }),
                 Some(out_resolution_delay()),
             ),
@@ -1497,15 +1360,9 @@ fn ech_retry_no_infinite_loop() {
             (
                 Some(Input::DnsResult {
                     id: Id::from(0),
-                    result: DnsResult::Https(Ok(vec![ServiceInfo {
-                        priority: 1,
-                        target_name: HOSTNAME.into(),
-                        alpn_http_versions: HashSet::from([HttpVersion::H2]),
-                        ipv6_hints: vec![],
-                        ipv4_hints: vec![],
-                        ech_config: Some(ech_config()),
-                        port: None,
-                    }])),
+                    result: DnsResult::Https(Ok(vec![
+                        service_info(1, HOSTNAME, &[HttpVersion::H2]).ech(),
+                    ])),
                 }),
                 Some(out_resolution_delay()),
             ),

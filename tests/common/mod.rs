@@ -1,7 +1,6 @@
 #![allow(dead_code)]
 
 use std::{
-    collections::HashSet,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     time::Instant,
 };
@@ -25,6 +24,58 @@ pub const ECH_CONFIG_BYTES: &[u8] = &[1, 2, 3, 4, 5];
 
 pub fn ech_config() -> EchConfig {
     EchConfig::new(ECH_CONFIG_BYTES.to_vec())
+}
+
+/// Build a [`ServiceInfo`] from the fields tests usually vary: priority, target
+/// name, and ALPN versions. The remaining fields (hints, ECH, port) default to
+/// empty/none; set them with the chainable [`ServiceInfoExt`] methods, e.g.
+/// `service_info(1, SVC1, &[HttpVersion::H3]).ech().port(8443)`.
+pub fn service_info(priority: u16, target_name: &str, alpns: &[HttpVersion]) -> ServiceInfo {
+    ServiceInfo {
+        priority,
+        target_name: target_name.into(),
+        alpn_http_versions: alpns.iter().copied().collect(),
+        ipv6_hints: vec![],
+        ipv4_hints: vec![],
+        ech_config: None,
+        port: None,
+    }
+}
+
+/// Chainable setters for the non-default [`ServiceInfo`] fields, so tests can
+/// build records without spelling out the defaults, e.g.
+/// `service_info(1, SVC1, &[HttpVersion::H3]).ech().port(9443)`.
+pub trait ServiceInfoExt {
+    /// Attach the default test ECH config ([`ech_config`]).
+    fn ech(self) -> Self;
+    /// Attach a specific ECH config.
+    fn ech_with(self, ech: EchConfig) -> Self;
+    fn port(self, port: u16) -> Self;
+    fn ipv6_hints(self, hints: Vec<Ipv6Addr>) -> Self;
+    fn ipv4_hints(self, hints: Vec<Ipv4Addr>) -> Self;
+}
+
+impl ServiceInfoExt for ServiceInfo {
+    fn ech(mut self) -> Self {
+        self.ech_config = Some(ech_config());
+        self
+    }
+    fn ech_with(mut self, ech: EchConfig) -> Self {
+        self.ech_config = Some(ech);
+        self
+    }
+    fn port(mut self, port: u16) -> Self {
+        self.port = Some(port);
+        self
+    }
+    fn ipv6_hints(mut self, hints: Vec<Ipv6Addr>) -> Self {
+        self.ipv6_hints = hints;
+        self
+    }
+    fn ipv4_hints(mut self, hints: Vec<Ipv4Addr>) -> Self {
+        self.ipv4_hints = hints;
+        self
+    }
 }
 
 pub trait HappyEyeballsExt {
@@ -62,60 +113,38 @@ impl HappyEyeballsExt for HappyEyeballs {
 pub fn in_dns_https_positive(id: Id) -> Input {
     Input::DnsResult {
         id,
-        result: DnsResult::Https(Ok(vec![ServiceInfo {
-            priority: 1,
-            target_name: HOSTNAME.into(),
-            alpn_http_versions: HashSet::from([HttpVersion::H3, HttpVersion::H2]),
-            ipv6_hints: vec![],
-            ipv4_hints: vec![],
-            ech_config: None,
-            port: None,
-        }])),
+        result: DnsResult::Https(Ok(vec![service_info(
+            1,
+            HOSTNAME,
+            &[HttpVersion::H3, HttpVersion::H2],
+        )])),
     }
 }
 
 pub fn in_dns_https_positive_ech(id: Id) -> Input {
     Input::DnsResult {
         id,
-        result: DnsResult::Https(Ok(vec![ServiceInfo {
-            priority: 1,
-            target_name: HOSTNAME.into(),
-            alpn_http_versions: HashSet::from([HttpVersion::H3, HttpVersion::H2]),
-            ipv6_hints: vec![],
-            ipv4_hints: vec![],
-            ech_config: Some(ech_config()),
-            port: None,
-        }])),
+        result: DnsResult::Https(Ok(vec![
+            service_info(1, HOSTNAME, &[HttpVersion::H3, HttpVersion::H2]).ech(),
+        ])),
     }
 }
 
 pub fn in_dns_https_positive_no_alpn(id: Id) -> Input {
     Input::DnsResult {
         id,
-        result: DnsResult::Https(Ok(vec![ServiceInfo {
-            priority: 1,
-            target_name: HOSTNAME.into(),
-            alpn_http_versions: HashSet::new(),
-            ipv6_hints: vec![],
-            ipv4_hints: vec![],
-            ech_config: None,
-            port: None,
-        }])),
+        result: DnsResult::Https(Ok(vec![service_info(1, HOSTNAME, &[])])),
     }
 }
 
 fn in_dns_https_with_hints(id: Id, ipv4_hints: Vec<Ipv4Addr>, ipv6_hints: Vec<Ipv6Addr>) -> Input {
     Input::DnsResult {
         id,
-        result: DnsResult::Https(Ok(vec![ServiceInfo {
-            priority: 1,
-            target_name: HOSTNAME.into(),
-            alpn_http_versions: HashSet::from([HttpVersion::H3, HttpVersion::H2]),
-            ipv4_hints,
-            ipv6_hints,
-            ech_config: None,
-            port: None,
-        }])),
+        result: DnsResult::Https(Ok(vec![
+            service_info(1, HOSTNAME, &[HttpVersion::H3, HttpVersion::H2])
+                .ipv4_hints(ipv4_hints)
+                .ipv6_hints(ipv6_hints),
+        ])),
     }
 }
 
@@ -134,15 +163,9 @@ pub fn in_dns_https_positive_v4_and_v6_hints(id: Id) -> Input {
 pub fn in_dns_https_positive_svc1(id: Id) -> Input {
     Input::DnsResult {
         id,
-        result: DnsResult::Https(Ok(vec![ServiceInfo {
-            priority: 1,
-            target_name: SVC1.into(),
-            alpn_http_versions: HashSet::from([HttpVersion::H3, HttpVersion::H2]),
-            ipv6_hints: vec![V6_ADDR_2],
-            ipv4_hints: vec![],
-            ech_config: None,
-            port: None,
-        }])),
+        result: DnsResult::Https(Ok(vec![
+            service_info(1, SVC1, &[HttpVersion::H3, HttpVersion::H2]).ipv6_hints(vec![V6_ADDR_2]),
+        ])),
     }
 }
 
