@@ -1581,3 +1581,145 @@ fn ech_retry_no_infinite_loop() {
         now,
     );
 }
+
+/// RFC 9460 multi-CDN configuration (Section 10.4.4 / Appendix B). A customer
+/// domain is steered across several independent CDNs via CNAME, and each CDN
+/// serves its own HTTPS/SVCB records pointing at its own pools. Because Happy
+/// Eyeballs v3 resolves each record's `TargetName` and connects to the
+/// addresses owned by that target, the multi-CDN setup just works: there is no
+/// need to compare the HTTPS record's target against the A/AAAA canonical name.
+///
+/// Modelled on the example where `www.customer.example` is a CNAME to one CDN
+/// (`cdn1.svc1.example`), which returns:
+///
+/// ```dns
+/// cdn1.svc1.example.    HTTPS 1 h3pool.svc1.example. alpn="h3"
+/// cdn1.svc1.example.    HTTPS 2 cdn1.svc1.example.   alpn="h2"
+/// h3pool.svc1.example.  AAAA  2001:db8:192:7::3
+/// h3pool.svc1.example.  A     192.0.2.3
+/// cdn1.svc1.example.    AAAA  2001:db8:192::4
+/// cdn1.svc1.example.    A     192.0.2.2
+/// ```
+///
+/// with the origin's own A/AAAA acting as the non-CDN fallback. Expected
+/// attempt order: the priority-1 pool (`h3pool`), then the priority-2 pool
+/// (`cdn1`), then the origin fallback last.
+#[test]
+fn rfc_multi_cdn_target_names_resolved_and_attempted() {
+    const H3POOL: &str = "h3pool.svc1.example.";
+    const CDN1: &str = "cdn1.svc1.example.";
+    const H3POOL_V6: Ipv6Addr = Ipv6Addr::new(0x2001, 0xdb8, 0x192, 7, 0, 0, 0, 3);
+    const H3POOL_V4: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 3);
+    const CDN1_V6: Ipv6Addr = Ipv6Addr::new(0x2001, 0xdb8, 0x192, 0, 0, 0, 0, 4);
+    const CDN1_V4: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 2);
+
+    let (mut now, mut he) = setup();
+
+    expect_initial_dns_queries(&mut he, now);
+    he.expect(
+        vec![
+            // The CDN the customer is CNAME'd to returns two ServiceMode records,
+            // each steering to a different pool with its own target name.
+            (
+                Some(Input::DnsResult {
+                    id: Id::from(0),
+                    result: DnsResult::Https(Ok(vec![
+                        service_info(1, H3POOL, &[HttpVersion::H3]),
+                        service_info(2, CDN1, &[HttpVersion::H2]),
+                    ])),
+                }),
+                // Both target names are resolved on their own.
+                Some(out_send_dns(Id::from(3), H3POOL, DnsRecordType::Aaaa)),
+            ),
+            (
+                None,
+                Some(out_send_dns(Id::from(4), H3POOL, DnsRecordType::A)),
+            ),
+            (
+                None,
+                Some(out_send_dns(Id::from(5), CDN1, DnsRecordType::Aaaa)),
+            ),
+            (
+                None,
+                Some(out_send_dns(Id::from(6), CDN1, DnsRecordType::A)),
+            ),
+            (None, Some(out_resolution_delay())),
+            // h3pool (priority 1) AAAA arrives -> first attempt uses the pool's
+            // own resolved address, never the origin's canonical name.
+            (
+                Some(Input::DnsResult {
+                    id: Id::from(3),
+                    result: DnsResult::Aaaa(Ok(vec![H3POOL_V6])),
+                }),
+                Some(out_attempt(
+                    Id::from(7),
+                    H3POOL_V6.into(),
+                    PORT,
+                    ConnectionAttemptHttpVersions::H3,
+                )),
+            ),
+            (
+                Some(Input::DnsResult {
+                    id: Id::from(4),
+                    result: DnsResult::A(Ok(vec![H3POOL_V4])),
+                }),
+                Some(out_connection_attempt_delay()),
+            ),
+            (
+                Some(Input::DnsResult {
+                    id: Id::from(5),
+                    result: DnsResult::Aaaa(Ok(vec![CDN1_V6])),
+                }),
+                Some(out_connection_attempt_delay()),
+            ),
+            (
+                Some(Input::DnsResult {
+                    id: Id::from(6),
+                    result: DnsResult::A(Ok(vec![CDN1_V4])),
+                }),
+                Some(out_connection_attempt_delay()),
+            ),
+            // Origin A/AAAA: the non-CDN fallback addresses.
+            (
+                Some(in_dns_aaaa_positive(Id::from(1))),
+                Some(out_connection_attempt_delay()),
+            ),
+            (
+                Some(in_dns_a_positive(Id::from(2))),
+                Some(out_connection_attempt_delay()),
+            ),
+        ],
+        now,
+    );
+
+    // Remaining attempts: the rest of the priority-1 pool, then the priority-2
+    // pool, then the origin fallback last.
+    he.expect_connection_attempts(
+        &mut now,
+        vec![
+            // h3pool pool (priority 1): alpn="h3" -> H3 only.
+            out_attempt(
+                Id::from(8),
+                H3POOL_V4.into(),
+                PORT,
+                ConnectionAttemptHttpVersions::H3,
+            ),
+            // cdn1 pool (priority 2): alpn="h2" -> H2 only.
+            out_attempt(
+                Id::from(9),
+                CDN1_V6.into(),
+                PORT,
+                ConnectionAttemptHttpVersions::H2,
+            ),
+            out_attempt(
+                Id::from(10),
+                CDN1_V4.into(),
+                PORT,
+                ConnectionAttemptHttpVersions::H2,
+            ),
+            // origin fallback (non-CDN) last
+            out_attempt_v6_h1_h2(Id::from(11)),
+            out_attempt_v4_h1_h2(Id::from(12)),
+        ],
+    );
+}
