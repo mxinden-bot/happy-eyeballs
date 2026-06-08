@@ -325,7 +325,7 @@ fn partial_ech_two_service_infos() {
             (
                 Some(Input::DnsResult {
                     id: Id::from(4),
-                    result: DnsResult::A(Ok(vec![V4_ADDR_2]), None),
+                    result: DnsResult::A(Ok(vec![V4_ADDR_2])),
                 }),
                 Some(Output::AttemptConnection {
                     id: Id::from(5),
@@ -417,7 +417,7 @@ fn both_service_infos_have_ech_no_origin_fallback() {
             (
                 Some(Input::DnsResult {
                     id: Id::from(4),
-                    result: DnsResult::A(Ok(vec![V4_ADDR_2]), None),
+                    result: DnsResult::A(Ok(vec![V4_ADDR_2])),
                 }),
                 Some(Output::AttemptConnection {
                     id: Id::from(7),
@@ -439,7 +439,7 @@ fn both_service_infos_have_ech_no_origin_fallback() {
             (
                 Some(Input::DnsResult {
                     id: Id::from(6),
-                    result: DnsResult::A(Ok(vec![V4_ADDR]), None),
+                    result: DnsResult::A(Ok(vec![V4_ADDR])),
                 }),
                 Some(out_connection_attempt_delay()),
             ),
@@ -519,7 +519,7 @@ fn per_record_alpn_not_unioned_across_records() {
             (
                 Some(Input::DnsResult {
                     id: Id::from(3),
-                    result: DnsResult::Aaaa(Ok(vec![V6_ADDR_2]), None),
+                    result: DnsResult::Aaaa(Ok(vec![V6_ADDR_2])),
                 }),
                 Some(out_attempt(
                     Id::from(7),
@@ -531,21 +531,21 @@ fn per_record_alpn_not_unioned_across_records() {
             (
                 Some(Input::DnsResult {
                     id: Id::from(4),
-                    result: DnsResult::A(Err(()), None),
+                    result: DnsResult::A(Err(())),
                 }),
                 Some(out_connection_attempt_delay()),
             ),
             (
                 Some(Input::DnsResult {
                     id: Id::from(5),
-                    result: DnsResult::Aaaa(Ok(vec![V6_ADDR_3]), None),
+                    result: DnsResult::Aaaa(Ok(vec![V6_ADDR_3])),
                 }),
                 Some(out_connection_attempt_delay()),
             ),
             (
                 Some(Input::DnsResult {
                     id: Id::from(6),
-                    result: DnsResult::A(Err(()), None),
+                    result: DnsResult::A(Err(())),
                 }),
                 Some(out_connection_attempt_delay()),
             ),
@@ -630,7 +630,7 @@ fn record_without_alpn_contributes_no_endpoints() {
             (
                 Some(Input::DnsResult {
                     id: Id::from(3),
-                    result: DnsResult::Aaaa(Ok(vec![V6_ADDR_2]), None),
+                    result: DnsResult::Aaaa(Ok(vec![V6_ADDR_2])),
                 }),
                 Some(out_attempt(
                     Id::from(7),
@@ -642,21 +642,21 @@ fn record_without_alpn_contributes_no_endpoints() {
             (
                 Some(Input::DnsResult {
                     id: Id::from(4),
-                    result: DnsResult::A(Err(()), None),
+                    result: DnsResult::A(Err(())),
                 }),
                 Some(out_connection_attempt_delay()),
             ),
             (
                 Some(Input::DnsResult {
                     id: Id::from(5),
-                    result: DnsResult::Aaaa(Ok(vec![V6_ADDR_3]), None),
+                    result: DnsResult::Aaaa(Ok(vec![V6_ADDR_3])),
                 }),
                 Some(out_connection_attempt_delay()),
             ),
             (
                 Some(Input::DnsResult {
                     id: Id::from(6),
-                    result: DnsResult::A(Err(()), None),
+                    result: DnsResult::A(Err(())),
                 }),
                 Some(out_connection_attempt_delay()),
             ),
@@ -748,7 +748,7 @@ fn partial_ech_with_alt_svc() {
             (
                 Some(Input::DnsResult {
                     id: Id::from(4),
-                    result: DnsResult::A(Ok(vec![V4_ADDR_2]), None),
+                    result: DnsResult::A(Ok(vec![V4_ADDR_2])),
                 }),
                 Some(Output::AttemptConnection {
                     id: Id::from(5),
@@ -1080,14 +1080,14 @@ fn https_svc1_addresses_trigger_additional_attempts() {
             (
                 Some(Input::DnsResult {
                     id: Id::from(3),
-                    result: DnsResult::Aaaa(Ok(vec![V6_ADDR_2]), None),
+                    result: DnsResult::Aaaa(Ok(vec![V6_ADDR_2])),
                 }),
                 Some(out_connection_attempt_delay()),
             ),
             (
                 Some(Input::DnsResult {
                     id: Id::from(4),
-                    result: DnsResult::A(Ok(vec![V4_ADDR_2]), None),
+                    result: DnsResult::A(Ok(vec![V4_ADDR_2])),
                 }),
                 Some(out_connection_attempt_delay()),
             ),
@@ -1276,7 +1276,7 @@ fn target_name_redirect_addresses_used_in_connection_attempts() {
             (
                 Some(Input::DnsResult {
                     id: Id::from(3),
-                    result: DnsResult::Aaaa(Ok(vec![V6_ADDR_2]), None),
+                    result: DnsResult::Aaaa(Ok(vec![V6_ADDR_2])),
                 }),
                 Some(Output::AttemptConnection {
                     id: Id::from(5),
@@ -1293,7 +1293,7 @@ fn target_name_redirect_addresses_used_in_connection_attempts() {
             (
                 Some(Input::DnsResult {
                     id: Id::from(4),
-                    result: DnsResult::A(Ok(vec![V4_ADDR_2]), None),
+                    result: DnsResult::A(Ok(vec![V4_ADDR_2])),
                 }),
                 Some(out_connection_attempt_delay()),
             ),
