@@ -964,16 +964,7 @@ impl HappyEyeballs {
         let any_ech = self.any_ech();
 
         let target_names = self
-            .dns_queries
-            .iter()
-            .filter_map(|q| match &q.state {
-                DnsQueryState::Completed {
-                    response: DnsResult::Https(Ok(service_infos)),
-                    ..
-                } => Some(service_infos.iter()),
-                _ => None,
-            })
-            .flatten()
+            .completed_service_infos()
             // When any ServiceInfo has ECH, skip resolving targets without ECH.
             .filter(move |i| !any_ech || i.ech_config.is_some())
             .map(|i| &i.target_name);
@@ -1222,16 +1213,7 @@ impl HappyEyeballs {
 
         // Collect all ServiceInfos sorted by priority.
         let mut service_infos: Vec<&ServiceInfo> = self
-            .dns_queries
-            .iter()
-            .filter_map(|q| match &q.state {
-                DnsQueryState::Completed {
-                    response: DnsResult::Https(Ok(infos)),
-                    ..
-                } => Some(infos.as_slice()),
-                _ => None,
-            })
-            .flatten()
+            .completed_service_infos()
             // When at least one ServiceInfo has ECH config, skip those without it
             // and skip the origin fallback.
             .filter(|i| !any_ech || i.ech_config.is_some())
@@ -1327,17 +1309,26 @@ impl HappyEyeballs {
         )
     }
 
+    /// ServiceInfos from all completed HTTPS responses.
+    fn completed_service_infos(&self) -> impl Iterator<Item = &ServiceInfo> {
+        self.dns_queries
+            .iter()
+            .filter_map(|q| match &q.state {
+                DnsQueryState::Completed {
+                    response: DnsResult::Https(Ok(infos)),
+                    ..
+                } => Some(infos.as_slice()),
+                _ => None,
+            })
+            .flatten()
+    }
+
     fn any_ech(&self) -> bool {
         if !self.network_config.ech {
             return false;
         }
-        self.dns_queries.iter().any(|q| match &q.state {
-            DnsQueryState::Completed {
-                response: DnsResult::Https(Ok(infos)),
-                ..
-            } => infos.iter().any(|i| i.ech_config.is_some()),
-            _ => false,
-        })
+        self.completed_service_infos()
+            .any(|i| i.ech_config.is_some())
     }
 
     /// HTTP versions when the host is an IP address (no DNS involved).
