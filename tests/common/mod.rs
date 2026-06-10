@@ -90,7 +90,11 @@ pub trait HappyEyeballsExt {
     fn expect_all(&mut self, expected: impl IntoIterator<Item = Output>, now: Instant);
     /// Assert that the state machine has no further output to produce.
     fn expect_idle(&mut self, now: Instant);
-    fn expect_connection_attempts(&mut self, connections: Vec<Output>, now: &mut Instant);
+    fn expect_connection_attempts(
+        &mut self,
+        connections: impl IntoIterator<Item = Output>,
+        now: &mut Instant,
+    );
 }
 
 impl HappyEyeballsExt for HappyEyeballs {
@@ -112,7 +116,11 @@ impl HappyEyeballsExt for HappyEyeballs {
         assert_eq!(None, self.process_output(now));
     }
 
-    fn expect_connection_attempts(&mut self, connections: Vec<Output>, now: &mut Instant) {
+    fn expect_connection_attempts(
+        &mut self,
+        connections: impl IntoIterator<Item = Output>,
+        now: &mut Instant,
+    ) {
         for conn in connections {
             *now += CONNECTION_ATTEMPT_DELAY;
             self.expect(conn, *now);

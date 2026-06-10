@@ -100,7 +100,7 @@ fn alt_svc_with_port() {
     he.expect(out_connection_attempt_delay(), now);
 
     he.expect_connection_attempts(
-        vec![
+        [
             // Alt-svc bucket (port 8443): V4:H3
             out_attempt(
                 Id::from(4),
@@ -167,7 +167,7 @@ fn ip_host_alt_svc_with_port() {
     he.expect(out_connection_attempt_delay(), now);
 
     he.expect_connection_attempts(
-        vec![
+        [
             // Fallback bucket (port 443): H2OrH1
             out_attempt(
                 Id::from(1),

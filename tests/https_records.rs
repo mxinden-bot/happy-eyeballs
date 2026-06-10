@@ -118,7 +118,7 @@ fn hints_discarded_on_negative_answer() {
         );
         he.expect(case.attempt_1, now);
 
-        he.expect_connection_attempts(vec![case.attempt_2, case.attempt_3], &mut now);
+        he.expect_connection_attempts([case.attempt_2, case.attempt_3], &mut now);
     }
 }
 
@@ -172,7 +172,7 @@ fn ech_disabled() {
 
     // Origin fallback is NOT skipped despite HTTPS record having ECH.
     he.expect_connection_attempts(
-        vec![Output::AttemptConnection {
+        [Output::AttemptConnection {
             id: Id::from(4),
             endpoint: Endpoint {
                 address: SocketAddr::new(V6_ADDR.into(), PORT),
@@ -399,7 +399,7 @@ fn both_service_infos_have_ech_no_origin_fallback() {
     // own record's ALPN: SVC1 is H3-only, SVC2 is H2-only. Origin fallback is
     // skipped — no ECH on the origin.
     he.expect_connection_attempts(
-        vec![
+        [
             // priority=2 (SVC2, port 10443, ech, alpn=h2)
             Output::AttemptConnection {
                 id: Id::from(8),
@@ -496,7 +496,7 @@ fn per_record_alpn_not_unioned_across_records() {
     he.expect(out_connection_attempt_delay(), now);
 
     he.expect_connection_attempts(
-        vec![
+        [
             // svc2 (alpn=h2): H2-only, no spurious H3 from svc1's record.
             out_attempt(
                 Id::from(8),
@@ -594,7 +594,7 @@ fn record_without_alpn_contributes_no_endpoints() {
 
     // svc2 has no ALPN, so it produces no endpoints (its resolved V6_ADDR_3 is
     // never attempted). Only svc1's H3 attempt and the origin fallback remain.
-    he.expect_connection_attempts(vec![out_attempt_v6_h1_h2(Id::from(8))], &mut now);
+    he.expect_connection_attempts([out_attempt_v6_h1_h2(Id::from(8))], &mut now);
 }
 
 /// Partial ECH with an alt-svc record on the origin. Both alt-svc and origin
@@ -782,7 +782,7 @@ fn https_port_svcparam_applies_but_fallbacks_follow() {
     // Connection attempts using custom port: V4:H3, V6:H2, V4:H2, then
     // fallback on port 443 with default HTTP versions (H2OrH1).
     he.expect_connection_attempts(
-        vec![
+        [
             out_attempt_v4_h3_custom_port(Id::from(4)),
             out_attempt_v6_h2_custom_port(Id::from(5)),
             out_attempt_v4_h2_custom_port(Id::from(6)),
@@ -849,7 +849,7 @@ fn https_two_service_infos_with_different_ports() {
     he.expect(out_connection_attempt_delay(), now);
 
     he.expect_connection_attempts(
-        vec![
+        [
             // Priority-1 bucket (port 20007): V4:H3, V6:H2, V4:H2.
             attempt(4, V4_ADDR.into(), PORT_1, ConnectionAttemptHttpVersions::H3),
             attempt(5, V6_ADDR.into(), PORT_1, ConnectionAttemptHttpVersions::H2),
@@ -954,7 +954,7 @@ fn https_svc1_addresses_trigger_additional_attempts() {
     // come before P2 (SVC1, priority=2) endpoints.  V6_ADDR:H3 was already
     // attempted (id=5); the remaining follow in priority order, then fallback.
     he.expect_connection_attempts(
-        vec![
+        [
             attempt(6, V4_ADDR.into(), ConnectionAttemptHttpVersions::H3), // priority=1
             attempt(7, V6_ADDR.into(), ConnectionAttemptHttpVersions::H2), // priority=1
             attempt(8, V4_ADDR.into(), ConnectionAttemptHttpVersions::H2), // priority=1
@@ -1019,7 +1019,7 @@ fn https_port_takes_precedence_over_alt_svc_port() {
     he.expect(out_connection_attempt_delay(), now);
 
     he.expect_connection_attempts(
-        vec![
+        [
             // HTTPS bucket (port 8443)
             out_attempt(
                 Id::from(4),
@@ -1141,7 +1141,7 @@ fn target_name_redirect_addresses_used_in_connection_attempts() {
     // Remaining attempts: SVC1's V4 address, then origin fallback.
     // SVC1 (priority 1) addresses come before the origin fallback.
     he.expect_connection_attempts(
-        vec![
+        [
             // SVC1 bucket (priority 1)
             Output::AttemptConnection {
                 id: Id::from(6),
@@ -1197,7 +1197,7 @@ fn https_fallback_uses_default_http_versions() {
     he.expect(out_connection_attempt_delay(), now);
 
     // Fallback on port 443 must use default H2OrH1, NOT H3.
-    he.expect_connection_attempts(vec![out_attempt_v4_h1_h2(Id::from(4))], &mut now);
+    he.expect_connection_attempts([out_attempt_v4_h1_h2(Id::from(4))], &mut now);
 }
 
 /// When a connection attempt fails with `EchRetry`, the state machine should
@@ -1516,7 +1516,7 @@ fn rfc_multi_cdn_target_names_resolved_and_attempted() {
     // Remaining attempts: the rest of the priority-1 pool, then the priority-2
     // pool, then the origin fallback last.
     he.expect_connection_attempts(
-        vec![
+        [
             // h3pool pool (priority 1): alpn="h3" -> H3 only.
             out_attempt(
                 Id::from(8),
