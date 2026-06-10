@@ -180,28 +180,28 @@ pub fn in_dns_https_negative(id: Id) -> Input {
 pub fn in_dns_aaaa_positive(id: Id) -> Input {
     Input::DnsResult {
         id,
-        result: DnsResult::Aaaa(Ok(vec![V6_ADDR]), None),
+        result: DnsResult::Aaaa(Ok(vec![V6_ADDR])),
     }
 }
 
 pub fn in_dns_a_positive(id: Id) -> Input {
     Input::DnsResult {
         id,
-        result: DnsResult::A(Ok(vec![V4_ADDR]), None),
+        result: DnsResult::A(Ok(vec![V4_ADDR])),
     }
 }
 
 pub fn in_dns_aaaa_negative(id: Id) -> Input {
     Input::DnsResult {
         id,
-        result: DnsResult::Aaaa(Err(()), None),
+        result: DnsResult::Aaaa(Err(())),
     }
 }
 
 pub fn in_dns_a_negative(id: Id) -> Input {
     Input::DnsResult {
         id,
-        result: DnsResult::A(Err(()), None),
+        result: DnsResult::A(Err(())),
     }
 }
 
