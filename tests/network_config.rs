@@ -13,7 +13,7 @@ fn ip_host() {
     let now = Instant::now();
     let mut he = HappyEyeballs::new("[2001:0DB8::1]", PORT).unwrap();
 
-    he.expect(vec![(None, Some(out_attempt_v6_h1_h2(Id::from(0))))], now);
+    he.expect(out_attempt_v6_h1_h2(Id::from(0)), now);
 }
 
 #[test]
@@ -37,7 +37,7 @@ fn alt_svc_construction() {
     let mut he = HappyEyeballs::new_with_network_config(HOSTNAME, PORT, config).unwrap();
 
     // Should still send DNS queries as normal
-    he.expect(vec![(None, Some(out_send_dns_https(Id::from(0))))], now);
+    he.expect(out_send_dns_https(Id::from(0)), now);
 }
 
 #[test]
@@ -55,20 +55,11 @@ fn alt_svc_used_immediately() {
 
     // Alt-svc with H3 should make H3 available even without HTTPS DNS response
     expect_initial_dns_queries(&mut he, now);
-    he.expect(
-        vec![
-            (
-                Some(in_dns_https_negative(Id::from(0))),
-                Some(out_resolution_delay()),
-            ),
-            // Alt-svc provided H3, so we should attempt H3 connection
-            (
-                Some(in_dns_aaaa_positive(Id::from(1))),
-                Some(out_attempt_v6_h3(Id::from(3))),
-            ),
-        ],
-        now,
-    );
+    he.input(in_dns_https_negative(Id::from(0)), now);
+    he.expect(out_resolution_delay(), now);
+    // Alt-svc provided H3, so we should attempt H3 connection
+    he.input(in_dns_aaaa_positive(Id::from(1)), now);
+    he.expect(out_attempt_v6_h3(Id::from(3)), now);
 }
 
 /// Alt-svc with a custom port: connections are attempted at both the alt-svc
@@ -92,33 +83,24 @@ fn alt_svc_with_port() {
     let (mut now, mut he) = setup_with_config(config);
 
     expect_initial_dns_queries(&mut he, now);
+    he.input(in_dns_https_negative(Id::from(0)), now);
+    he.expect(out_resolution_delay(), now);
+    // AAAA arrives, move-on met. First endpoint: alt-svc port V6:H3
+    he.input(in_dns_aaaa_positive(Id::from(1)), now);
     he.expect(
-        vec![
-            (
-                Some(in_dns_https_negative(Id::from(0))),
-                Some(out_resolution_delay()),
-            ),
-            // AAAA arrives, move-on met. First endpoint: alt-svc port V6:H3
-            (
-                Some(in_dns_aaaa_positive(Id::from(1))),
-                Some(out_attempt(
-                    Id::from(3),
-                    V6_ADDR.into(),
-                    alt_port,
-                    ConnectionAttemptHttpVersions::H3,
-                )),
-            ),
-            (
-                Some(in_dns_a_positive(Id::from(2))),
-                Some(out_connection_attempt_delay()),
-            ),
-        ],
+        out_attempt(
+            Id::from(3),
+            V6_ADDR.into(),
+            alt_port,
+            ConnectionAttemptHttpVersions::H3,
+        ),
         now,
     );
+    he.input(in_dns_a_positive(Id::from(2)), now);
+    he.expect(out_connection_attempt_delay(), now);
 
     he.expect_connection_attempts(
-        &mut now,
-        vec![
+        [
             // Alt-svc bucket (port 8443): V4:H3
             out_attempt(
                 Id::from(4),
@@ -140,22 +122,16 @@ fn alt_svc_with_port() {
                 ConnectionAttemptHttpVersions::H2OrH1,
             ),
         ],
+        &mut now,
     );
 
     // All connection attempts fail -> should report Failed(Connection)
     for id in 3..=5 {
-        he.expect(
-            vec![(Some(in_connection_result_negative(Id::from(id))), None)],
-            now,
-        );
+        he.input(in_connection_result_negative(Id::from(id)), now);
+        he.expect_idle(now);
     }
-    he.expect(
-        vec![(
-            Some(in_connection_result_negative(Id::from(6))),
-            Some(Output::Failed(FailureReason::Connection)),
-        )],
-        now,
-    );
+    he.input(in_connection_result_negative(Id::from(6)), now);
+    he.expect(Output::Failed(FailureReason::Connection), now);
 }
 
 /// When the host is an IP address and alt-svc specifies a custom port,
@@ -178,26 +154,20 @@ fn ip_host_alt_svc_with_port() {
     let mut he =
         HappyEyeballs::new_with_network_config(&V4_ADDR.to_string(), PORT, config).unwrap();
 
+    // Alt-svc bucket (port 8443): H3
     he.expect(
-        vec![
-            // Alt-svc bucket (port 8443): H3
-            (
-                None,
-                Some(out_attempt(
-                    Id::from(0),
-                    V4_ADDR.into(),
-                    CUSTOM_PORT,
-                    ConnectionAttemptHttpVersions::H3,
-                )),
-            ),
-            (None, Some(out_connection_attempt_delay())),
-        ],
+        out_attempt(
+            Id::from(0),
+            V4_ADDR.into(),
+            CUSTOM_PORT,
+            ConnectionAttemptHttpVersions::H3,
+        ),
         now,
     );
+    he.expect(out_connection_attempt_delay(), now);
 
     he.expect_connection_attempts(
-        &mut now,
-        vec![
+        [
             // Fallback bucket (port 443): H2OrH1
             out_attempt(
                 Id::from(1),
@@ -206,6 +176,7 @@ fn ip_host_alt_svc_with_port() {
                 ConnectionAttemptHttpVersions::H2OrH1,
             ),
         ],
+        &mut now,
     );
 }
 
@@ -223,30 +194,23 @@ fn custom_delays() {
     });
 
     expect_initial_dns_queries(&mut he, now);
+    he.input(in_dns_a_positive(Id::from(2)), now);
+    // Should use the custom resolution delay, not the default 50ms.
     he.expect(
-        vec![(
-            Some(in_dns_a_positive(Id::from(2))),
-            // Should use the custom resolution delay, not the default 50ms.
-            Some(Output::Timer {
-                duration: custom_resolution_delay,
-            }),
-        )],
+        Output::Timer {
+            duration: custom_resolution_delay,
+        },
         now,
     );
 
     now += custom_resolution_delay;
 
+    he.expect(out_attempt_v4_h1_h2(Id::from(3)), now);
+    // Should use the custom connection attempt delay, not the default 250ms.
     he.expect(
-        vec![
-            (None, Some(out_attempt_v4_h1_h2(Id::from(3)))),
-            // Should use the custom connection attempt delay, not the default 250ms.
-            (
-                None,
-                Some(Output::Timer {
-                    duration: custom_connection_attempt_delay,
-                }),
-            ),
-        ],
+        Output::Timer {
+            duration: custom_connection_attempt_delay,
+        },
         now,
     );
 }
@@ -290,15 +254,7 @@ fn assert_alt_svc_version_disabled(
     )
     .unwrap();
     he.expect(
-        vec![(
-            None,
-            Some(out_attempt(
-                Id::from(0),
-                V4_ADDR.into(),
-                PORT,
-                expected_fallback,
-            )),
-        )],
+        out_attempt(Id::from(0), V4_ADDR.into(), PORT, expected_fallback),
         now,
     );
 }
