@@ -671,8 +671,19 @@ pub struct Endpoint {
 /// families so the diversity of options is tried early, instead of draining
 /// every attempt of one variant before moving on to the next.
 ///
+/// For example, three IPv6 and one IPv4 address that each offer HTTP/3 and
+/// HTTP/2 are ordered:
+///
+/// ```text
+/// v6a/H3, v4/H3, v6a/H2, v6b/H3, v4/H2, v6c/H3, v6b/H2, v6c/H2
+/// ```
+///
+/// so IPv4 (the other family) and HTTP/2 (the other protocol) are both reached
+/// within the first few attempts, rather than after every IPv6 HTTP/3 attempt.
+///
 /// All endpoints belong to the same group (same application protocols and
-/// security properties, same service priority). Two interleavings are combined.
+/// security properties, same service priority). The order combines two
+/// interleavings from the draft.
 ///
 /// Address families, per Section 5.3:
 ///
@@ -689,10 +700,19 @@ pub struct Endpoint {
 ///
 /// <https://www.ietf.org/archive/id/draft-ietf-happy-happyeyeballs-v3-03.html#section-5.1.1>
 ///
-/// Each endpoint is ranked by protocol preference and by its position in the
-/// address-family interleave, then endpoints are ordered by the sum of the two
-/// ranks. So the most preferred endpoint comes first, and every later attempt
-/// steps across both a family and a protocol boundary.
+/// Both axes become ranks: protocol preference down the rows, the
+/// address-family interleave across the columns. Endpoints are then visited in
+/// order of increasing `row + column` (ties to the upper row), sweeping the
+/// diagonals. The cells below are numbered in that visit order, which is the
+/// order listed above:
+///
+/// ```text
+///                  column = address-family interleave
+///                  0:v6a   1:v4   2:v6b   3:v6c
+///                +-------------------------------
+///     H3 (row 0) |   1      2       4       6
+///     H2 (row 1) |   3      5       7       8
+/// ```
 fn interleave_endpoints(endpoints: Vec<Endpoint>, prefer_v6: bool) -> Vec<Endpoint> {
     if endpoints.len() <= 1 {
         return endpoints;
