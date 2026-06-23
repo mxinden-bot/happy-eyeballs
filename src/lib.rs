@@ -672,14 +672,21 @@ pub struct Endpoint {
 /// every attempt of one variant before moving on to the next.
 ///
 /// For example, three IPv6 and one IPv4 address that each offer HTTP/3 and
-/// HTTP/2 are ordered:
+/// HTTP/2 are attempted in this order:
 ///
 /// ```text
-/// v6a/H3, v4/H3, v6a/H2, v6b/H3, v4/H2, v6c/H3, v6b/H2, v6c/H2
+/// 1. v6a / H3   most preferred
+/// 2. v4  / H3   next address family
+/// 3. v6a / H2   next protocol
+/// 4. v6b / H3
+/// 5. v4  / H2
+/// 6. v6c / H3
+/// 7. v6b / H2
+/// 8. v6c / H2
 /// ```
 ///
-/// so IPv4 (the other family) and HTTP/2 (the other protocol) are both reached
-/// within the first few attempts, rather than after every IPv6 HTTP/3 attempt.
+/// IPv4 and HTTP/2 are both reached within the first three attempts, rather
+/// than after every IPv6 HTTP/3 attempt is exhausted.
 ///
 /// All endpoints belong to the same group (same application protocols and
 /// security properties, same service priority). The order combines two
