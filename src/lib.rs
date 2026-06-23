@@ -711,26 +711,18 @@ fn interleave_endpoints(endpoints: Vec<Endpoint>, prefer_v6: bool) -> Vec<Endpoi
     for (protocol_rank, protocol) in protocols.iter().enumerate() {
         // This protocol's endpoints, split by address family while preserving
         // the input (DNS) order within each family.
-        let (preferred, other): (Vec<Endpoint>, Vec<Endpoint>) = endpoints
+        let (preferred, other): (Vec<&Endpoint>, Vec<&Endpoint>) = endpoints
             .iter()
             .filter(|e| e.http_version == *protocol)
-            .cloned()
             .partition(|e| e.address.is_ipv6() == prefer_v6);
 
-        // Interleave the two families one address at a time, preferred first.
-        let mut preferred = preferred.into_iter();
-        let mut other = other.into_iter();
-        let mut address_index = 0;
-        loop {
-            let mut pushed = false;
-            for endpoint in [preferred.next(), other.next()].into_iter().flatten() {
-                keyed.push((address_index, protocol_rank, endpoint));
-                address_index += 1;
-                pushed = true;
-            }
-            if !pushed {
-                break;
-            }
+        // Interleave the two families one address at a time, preferred first
+        // (Section 5.3), recording each endpoint's interleaved position.
+        let interleaved = (0..preferred.len().max(other.len()))
+            .flat_map(|i| [preferred.get(i), other.get(i)])
+            .flatten();
+        for (address_index, &endpoint) in interleaved.enumerate() {
+            keyed.push((address_index, protocol_rank, endpoint.clone()));
         }
     }
 
