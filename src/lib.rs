@@ -48,8 +48,7 @@
 //!
 //! For complete example usage, see the [`tests/`](tests/).
 
-use std::cmp::Ordering;
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fmt::Debug;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::{Duration, Instant};
@@ -668,23 +667,115 @@ pub struct Endpoint {
     pub ech_config: Option<EchConfig>,
 }
 
-impl Endpoint {
-    fn cmp_with_config(&self, other: &Endpoint, network_config: &NetworkConfig) -> Ordering {
-        if self.http_version != other.http_version {
-            return self.http_version.cmp(&other.http_version);
-        }
-
-        let order = self
-            .address
-            .ip()
-            .is_ipv6()
-            .cmp(&other.address.ip().is_ipv6());
-        if network_config.prefer_v6() {
-            order.reverse()
-        } else {
-            order
-        }
+/// Interleave a group's endpoints across protocol variants and address
+/// families so the diversity of options is tried early, instead of draining
+/// every attempt of one variant before moving on to the next.
+///
+/// For example, three IPv6 and one IPv4 address that each offer HTTP/3 and
+/// HTTP/2 are attempted in this order:
+///
+/// ```text
+/// 1. v6a / H3   most preferred
+/// 2. v4  / H3   next address family
+/// 3. v6a / H2   next protocol
+/// 4. v6b / H3
+/// 5. v4  / H2
+/// 6. v6c / H3
+/// 7. v6b / H2
+/// 8. v6c / H2
+/// ```
+///
+/// IPv4 and HTTP/2 are both reached within the first three attempts, rather
+/// than after every IPv6 HTTP/3 attempt is exhausted.
+///
+/// All endpoints belong to the same group (same application protocols and
+/// security properties, same service priority). The order combines two
+/// interleavings from the draft.
+///
+/// Address families, per Section 5.3:
+///
+/// > Whichever address family is first in the list should be followed by an
+/// > endpoint of the other address family.
+///
+/// <https://www.ietf.org/archive/id/draft-ietf-happy-happyeyeballs-v3-03.html#section-5.3>
+///
+/// Protocol variants, per Section 5.1.1, since the HTTP version (HTTP/3 over
+/// QUIC vs. HTTP/2 over TCP) is non-critical here:
+///
+/// > Clients SHOULD avoid grouping and sorting separately in cases where their
+/// > use of an application protocol or feature is non-critical.
+///
+/// <https://www.ietf.org/archive/id/draft-ietf-happy-happyeyeballs-v3-03.html#section-5.1.1>
+///
+/// Both axes become ranks: protocol preference down the rows, the
+/// address-family interleave across the columns. Endpoints are then visited in
+/// order of increasing `row + column` (ties to the upper row), sweeping the
+/// diagonals. The cells below are numbered in that visit order, which is the
+/// order listed above:
+///
+/// ```text
+///                  column = address-family interleave
+///                  0:v6a   1:v4   2:v6b   3:v6c
+///                +-------------------------------
+///     H3 (row 0) |   1      2       4       6
+///     H2 (row 1) |   3      5       7       8
+/// ```
+fn interleave_endpoints(endpoints: Vec<Endpoint>, prefer_v6: bool) -> Vec<Endpoint> {
+    if endpoints.len() <= 1 {
+        return endpoints;
     }
+
+    // The protocol variants present, most preferred first (`H3 < H2OrH1 < ...`).
+    let protocols: BTreeSet<ConnectionAttemptHttpVersions> =
+        endpoints.iter().map(|e| e.http_version).collect();
+
+    // Rank every endpoint by protocol preference and by its position in this
+    // protocol's address-family interleave.
+    let mut ranked: Vec<(usize, usize, &Endpoint)> = protocols
+        .iter()
+        .enumerate()
+        .flat_map(|(protocol_rank, protocol)| {
+            let (preferred, other): (Vec<&Endpoint>, Vec<&Endpoint>) = endpoints
+                .iter()
+                .filter(|e| e.http_version == *protocol)
+                .partition(|e| e.address.is_ipv6() == prefer_v6);
+            interleave_families(preferred, other)
+                .enumerate()
+                .map(move |(address_rank, endpoint)| (protocol_rank, address_rank, endpoint))
+        })
+        .collect();
+
+    // Order by the sum of the two ranks, preferred protocol first on a tie.
+    ranked.sort_by_key(|&(protocol_rank, address_rank, _)| {
+        (protocol_rank + address_rank, protocol_rank)
+    });
+    ranked
+        .into_iter()
+        .map(|(_, _, endpoint)| endpoint.clone())
+        .collect()
+}
+
+/// Interleave two address families one address at a time, the preferred family
+/// first, continuing with whichever family is longer once the other is
+/// exhausted (draft-ietf-happy-happyeyeballs-v3-03 Section 5.3).
+///
+/// Both families are padded with `None` so a plain [`Iterator::zip`] lines them
+/// up; the pairs are flattened back to one address at a time and the padding
+/// dropped, stopping once both families are spent.
+fn interleave_families<'a>(
+    preferred: Vec<&'a Endpoint>,
+    other: Vec<&'a Endpoint>,
+) -> impl Iterator<Item = &'a Endpoint> {
+    let preferred = preferred
+        .into_iter()
+        .map(Some)
+        .chain(std::iter::repeat(None));
+    let other = other.into_iter().map(Some).chain(std::iter::repeat(None));
+    preferred
+        .zip(other)
+        .take_while(|(p, o)| p.is_some() || o.is_some())
+        .flat_map(|(p, o)| [p, o])
+        .flatten()
 }
 
 #[derive(Debug, Clone)]
@@ -1195,21 +1286,21 @@ impl HappyEyeballs {
     }
 
     fn endpoints_to_attempt_ip(&self, ip: IpAddr) -> Vec<Endpoint> {
-        let mut endpoints: Vec<Endpoint> = Vec::new();
-        for (http_version, port) in self.origin_version_port_pairs() {
-            let mut bucket = vec![Endpoint {
+        let endpoints = self
+            .origin_version_port_pairs()
+            .into_iter()
+            .map(|(http_version, port)| Endpoint {
                 address: SocketAddr::new(ip, port),
                 http_version,
                 ech_config: None,
-            }];
-            bucket.sort_by(|a, b| a.cmp_with_config(b, &self.network_config));
-            endpoints.extend(bucket);
-        }
-        endpoints
+            })
+            .collect();
+        interleave_endpoints(endpoints, self.network_config.prefer_v6())
     }
 
     fn endpoints_to_attempt_domain(&self, origin_domain: &str) -> Vec<Endpoint> {
         let any_ech = self.any_ech();
+        let prefer_v6 = self.network_config.prefer_v6();
 
         // Collect all ServiceInfos sorted by priority.
         let mut service_infos: Vec<&ServiceInfo> = self
@@ -1243,37 +1334,38 @@ impl HappyEyeballs {
                     }
                     _ => None,
                 });
-            let mut bucket = info.flatten_into_endpoints(
+            let bucket = info.flatten_into_endpoints(
                 self.port,
                 ipv4_addrs,
                 ipv6_addrs,
                 &self.network_config.http_versions,
                 self.network_config.ech,
             );
-            bucket.sort_by(|a, b| a.cmp_with_config(b, &self.network_config));
-            endpoints.extend(bucket);
+            endpoints.extend(interleave_endpoints(bucket, prefer_v6));
         }
 
         // Alt-svc and fallback endpoints use the origin domain without ECH.
-        // Only include them when ECH is not required.
+        // Only include them when ECH is not required. They form a single group
+        // so that their protocol variants (e.g. an alt-svc HTTP/3 and the
+        // default HTTP/2) and address families are interleaved together.
         if !any_ech {
+            let mut fallback: Vec<Endpoint> = Vec::new();
             for (http_version, port) in self.origin_version_port_pairs() {
                 let http_versions = HashSet::from([http_version]);
-                let mut bucket: Vec<Endpoint> = self
-                    .dns_queries
-                    .iter()
-                    .filter_map(|q| match &q.state {
-                        DnsQueryState::Completed {
-                            response: r @ (DnsResult::Aaaa(_) | DnsResult::A(_)),
-                            ..
-                        } if q.target_name.as_str() == origin_domain => Some(r),
-                        _ => None,
-                    })
-                    .flat_map(|r| r.flatten_into_endpoints(port, &http_versions))
-                    .collect();
-                bucket.sort_by(|a, b| a.cmp_with_config(b, &self.network_config));
-                endpoints.extend(bucket);
+                fallback.extend(
+                    self.dns_queries
+                        .iter()
+                        .filter_map(|q| match &q.state {
+                            DnsQueryState::Completed {
+                                response: r @ (DnsResult::Aaaa(_) | DnsResult::A(_)),
+                                ..
+                            } if q.target_name.as_str() == origin_domain => Some(r),
+                            _ => None,
+                        })
+                        .flat_map(|r| r.flatten_into_endpoints(port, &http_versions)),
+                );
             }
+            endpoints.extend(interleave_endpoints(fallback, prefer_v6));
         }
 
         endpoints

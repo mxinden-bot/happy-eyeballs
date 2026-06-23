@@ -86,10 +86,15 @@ fn successful_connection_cancels_others() {
     he.input(in_dns_a_positive(Id::from(2)), now);
     he.expect(out_connection_attempt_delay(), now);
 
+    // Address families are interleaved, so the single IPv4 address is attempted
+    // before the second IPv6 address.
+    now += CONNECTION_ATTEMPT_DELAY;
+    he.expect(out_attempt_v4_h1_h2(Id::from(4)), now);
+
     now += CONNECTION_ATTEMPT_DELAY;
     he.expect(
         Output::AttemptConnection {
-            id: Id::from(4),
+            id: Id::from(5),
             endpoint: Endpoint {
                 address: SocketAddr::new(V6_ADDR_2.into(), PORT),
                 http_version: ConnectionAttemptHttpVersions::H2OrH1,
@@ -99,9 +104,6 @@ fn successful_connection_cancels_others() {
         },
         now,
     );
-
-    now += CONNECTION_ATTEMPT_DELAY;
-    he.expect(out_attempt_v4_h1_h2(Id::from(5)), now);
     he.input(in_connection_result_positive(Id::from(3)), now);
     he.expect_all(
         [
