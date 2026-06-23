@@ -705,35 +705,52 @@ fn interleave_endpoints(endpoints: Vec<Endpoint>, prefer_v6: bool) -> Vec<Endpoi
     let protocols: BTreeSet<ConnectionAttemptHttpVersions> =
         endpoints.iter().map(|e| e.http_version).collect();
 
-    // Place every endpoint on the grid at (protocol rank, address rank).
-    let mut grid: Vec<(usize, usize, Endpoint)> = Vec::with_capacity(endpoints.len());
-    for (protocol_rank, protocol) in protocols.iter().enumerate() {
-        let (preferred, other): (Vec<&Endpoint>, Vec<&Endpoint>) = endpoints
-            .iter()
-            .filter(|e| e.http_version == *protocol)
-            .partition(|e| e.address.is_ipv6() == prefer_v6);
-
-        for (address_rank, endpoint) in interleave_families(preferred, other).enumerate() {
-            grid.push((protocol_rank, address_rank, endpoint.clone()));
-        }
-    }
+    // Place every endpoint on the grid at (protocol rank, address rank), the
+    // address rank being its position in this protocol's address-family
+    // interleave.
+    let mut grid: Vec<(usize, usize, &Endpoint)> = protocols
+        .iter()
+        .enumerate()
+        .flat_map(|(protocol_rank, protocol)| {
+            let (preferred, other): (Vec<&Endpoint>, Vec<&Endpoint>) = endpoints
+                .iter()
+                .filter(|e| e.http_version == *protocol)
+                .partition(|e| e.address.is_ipv6() == prefer_v6);
+            interleave_families(preferred, other)
+                .enumerate()
+                .map(move |(address_rank, endpoint)| (protocol_rank, address_rank, endpoint))
+        })
+        .collect();
 
     // Read the grid out along its anti-diagonals.
     grid.sort_by_key(|&(protocol_rank, address_rank, _)| {
         (protocol_rank + address_rank, protocol_rank)
     });
-    grid.into_iter().map(|(_, _, endpoint)| endpoint).collect()
+    grid.into_iter()
+        .map(|(_, _, endpoint)| endpoint.clone())
+        .collect()
 }
 
 /// Interleave two address families one address at a time, the preferred family
 /// first, continuing with whichever family is longer once the other is
 /// exhausted (draft-ietf-happy-happyeyeballs-v3-03 Section 5.3).
+///
+/// Both families are padded with `None` so a plain [`Iterator::zip`] lines them
+/// up; the pairs are flattened back to one address at a time and the padding
+/// dropped, stopping once both families are spent.
 fn interleave_families<'a>(
     preferred: Vec<&'a Endpoint>,
     other: Vec<&'a Endpoint>,
 ) -> impl Iterator<Item = &'a Endpoint> {
-    (0..preferred.len().max(other.len()))
-        .flat_map(move |i| [preferred.get(i).copied(), other.get(i).copied()])
+    let preferred = preferred
+        .into_iter()
+        .map(Some)
+        .chain(std::iter::repeat(None));
+    let other = other.into_iter().map(Some).chain(std::iter::repeat(None));
+    preferred
+        .zip(other)
+        .take_while(|(p, o)| p.is_some() || o.is_some())
+        .flat_map(|(p, o)| [p, o])
         .flatten()
 }
 
