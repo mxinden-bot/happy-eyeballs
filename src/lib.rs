@@ -689,13 +689,10 @@ pub struct Endpoint {
 ///
 /// <https://www.ietf.org/archive/id/draft-ietf-happy-happyeyeballs-v3-03.html#section-5.1.1>
 ///
-/// Picture a grid whose rows are protocol variants (most preferred first) and
-/// whose columns are addresses (in per-protocol address-family-interleaved
-/// order). Reading the grid out along its anti-diagonals visits
-/// `protocol_rank + address_rank == 0, 1, 2, ...` in turn, so every step fans
-/// out across both axes: the single most preferred endpoint stays first, then
-/// the other family and the other protocol follow before the preferred lane is
-/// drained. Ties on a diagonal favor the more preferred protocol.
+/// Each endpoint is ranked by protocol preference and by its position in the
+/// address-family interleave, then endpoints are ordered by the sum of the two
+/// ranks. So the most preferred endpoint comes first, and every later attempt
+/// steps across both a family and a protocol boundary.
 fn interleave_endpoints(endpoints: Vec<Endpoint>, prefer_v6: bool) -> Vec<Endpoint> {
     if endpoints.len() <= 1 {
         return endpoints;
@@ -705,10 +702,9 @@ fn interleave_endpoints(endpoints: Vec<Endpoint>, prefer_v6: bool) -> Vec<Endpoi
     let protocols: BTreeSet<ConnectionAttemptHttpVersions> =
         endpoints.iter().map(|e| e.http_version).collect();
 
-    // Place every endpoint on the grid at (protocol rank, address rank), the
-    // address rank being its position in this protocol's address-family
-    // interleave.
-    let mut grid: Vec<(usize, usize, &Endpoint)> = protocols
+    // Rank every endpoint by protocol preference and by its position in this
+    // protocol's address-family interleave.
+    let mut ranked: Vec<(usize, usize, &Endpoint)> = protocols
         .iter()
         .enumerate()
         .flat_map(|(protocol_rank, protocol)| {
@@ -722,11 +718,12 @@ fn interleave_endpoints(endpoints: Vec<Endpoint>, prefer_v6: bool) -> Vec<Endpoi
         })
         .collect();
 
-    // Read the grid out along its anti-diagonals.
-    grid.sort_by_key(|&(protocol_rank, address_rank, _)| {
+    // Order by the sum of the two ranks, preferred protocol first on a tie.
+    ranked.sort_by_key(|&(protocol_rank, address_rank, _)| {
         (protocol_rank + address_rank, protocol_rank)
     });
-    grid.into_iter()
+    ranked
+        .into_iter()
         .map(|(_, _, endpoint)| endpoint.clone())
         .collect()
 }
