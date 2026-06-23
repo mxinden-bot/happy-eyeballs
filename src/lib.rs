@@ -48,7 +48,7 @@
 //!
 //! For complete example usage, see the [`tests/`](tests/).
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fmt::Debug;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::{Duration, Instant};
@@ -668,72 +668,73 @@ pub struct Endpoint {
 }
 
 /// Interleave a group's endpoints across protocol variants and address
-/// families so that the diversity of options is tried early, instead of
-/// exhausting all attempts of one variant before moving to the next.
+/// families so the diversity of options is tried early, instead of draining
+/// every attempt of one variant before moving on to the next.
 ///
-/// All endpoints passed in belong to the same group (same application
-/// protocols and security properties, same service priority). Within the
-/// group two interleavings are combined:
+/// All endpoints belong to the same group (same application protocols and
+/// security properties, same service priority). Two interleavings are combined.
+///
+/// Address families, per Section 5.3:
 ///
 /// > Whichever address family is first in the list should be followed by an
 /// > endpoint of the other address family.
 ///
 /// <https://www.ietf.org/archive/id/draft-ietf-happy-happyeyeballs-v3-03.html#section-5.3>
 ///
+/// Protocol variants, per Section 5.1.1, since the HTTP version (HTTP/3 over
+/// QUIC vs. HTTP/2 over TCP) is non-critical here:
+///
 /// > Clients SHOULD avoid grouping and sorting separately in cases where their
 /// > use of an application protocol or feature is non-critical.
 ///
 /// <https://www.ietf.org/archive/id/draft-ietf-happy-happyeyeballs-v3-03.html#section-5.1.1>
 ///
-/// HTTP version selection is treated as non-critical, so protocol variants
-/// (e.g. HTTP/3 over QUIC vs. HTTP/2 over TCP) are interleaved rather than
-/// attempted one variant fully before the next.
-///
-/// Each endpoint is assigned two coordinates: its protocol variant's rank in
-/// the group's preference order, and its address's position within the
-/// per-protocol address-family interleave. Endpoints are then ordered by the
-/// sum of those coordinates (their "diagonal"), breaking ties towards the more
-/// preferred protocol. The most preferred endpoint (preferred protocol,
-/// preferred family, first address) stays first; the next attempts fan out
-/// across families and protocols.
+/// Picture a grid whose rows are protocol variants (most preferred first) and
+/// whose columns are addresses (in per-protocol address-family-interleaved
+/// order). Reading the grid out along its anti-diagonals visits
+/// `protocol_rank + address_rank == 0, 1, 2, ...` in turn, so every step fans
+/// out across both axes: the single most preferred endpoint stays first, then
+/// the other family and the other protocol follow before the preferred lane is
+/// drained. Ties on a diagonal favor the more preferred protocol.
 fn interleave_endpoints(endpoints: Vec<Endpoint>, prefer_v6: bool) -> Vec<Endpoint> {
     if endpoints.len() <= 1 {
         return endpoints;
     }
 
-    // Protocol variants present, in preference order (ascending `Ord`, H3 first).
-    let mut protocols: Vec<ConnectionAttemptHttpVersions> =
+    // The protocol variants present, most preferred first (`H3 < H2OrH1 < ...`).
+    let protocols: BTreeSet<ConnectionAttemptHttpVersions> =
         endpoints.iter().map(|e| e.http_version).collect();
-    protocols.sort_unstable();
-    protocols.dedup();
 
-    let mut keyed: Vec<(usize, usize, Endpoint)> = Vec::with_capacity(endpoints.len());
+    // Place every endpoint on the grid at (protocol rank, address rank).
+    let mut grid: Vec<(usize, usize, Endpoint)> = Vec::with_capacity(endpoints.len());
     for (protocol_rank, protocol) in protocols.iter().enumerate() {
-        // This protocol's endpoints, split by address family while preserving
-        // the input (DNS) order within each family.
         let (preferred, other): (Vec<&Endpoint>, Vec<&Endpoint>) = endpoints
             .iter()
             .filter(|e| e.http_version == *protocol)
             .partition(|e| e.address.is_ipv6() == prefer_v6);
 
-        // Interleave the two families one address at a time, preferred first
-        // (Section 5.3), recording each endpoint's interleaved position.
-        let interleaved = (0..preferred.len().max(other.len()))
-            .flat_map(|i| [preferred.get(i), other.get(i)])
-            .flatten();
-        for (address_index, &endpoint) in interleaved.enumerate() {
-            keyed.push((address_index, protocol_rank, endpoint.clone()));
+        for (address_rank, endpoint) in interleave_families(preferred, other).enumerate() {
+            grid.push((protocol_rank, address_rank, endpoint.clone()));
         }
     }
 
-    keyed.sort_by_key(|(address_index, protocol_rank, _)| {
-        (
-            address_index + protocol_rank,
-            *protocol_rank,
-            *address_index,
-        )
+    // Read the grid out along its anti-diagonals.
+    grid.sort_by_key(|&(protocol_rank, address_rank, _)| {
+        (protocol_rank + address_rank, protocol_rank)
     });
-    keyed.into_iter().map(|(_, _, endpoint)| endpoint).collect()
+    grid.into_iter().map(|(_, _, endpoint)| endpoint).collect()
+}
+
+/// Interleave two address families one address at a time, the preferred family
+/// first, continuing with whichever family is longer once the other is
+/// exhausted (draft-ietf-happy-happyeyeballs-v3-03 Section 5.3).
+fn interleave_families<'a>(
+    preferred: Vec<&'a Endpoint>,
+    other: Vec<&'a Endpoint>,
+) -> impl Iterator<Item = &'a Endpoint> {
+    (0..preferred.len().max(other.len()))
+        .flat_map(move |i| [preferred.get(i).copied(), other.get(i).copied()])
+        .flatten()
 }
 
 #[derive(Debug, Clone)]
