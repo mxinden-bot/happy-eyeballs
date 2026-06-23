@@ -215,6 +215,42 @@ fn custom_delays() {
     );
 }
 
+/// With `wait_for_preferred_address` disabled, the non-preferred family (A)
+/// plus an HTTPS answer is enough to move on, without waiting out the
+/// resolution delay for the preferred family (AAAA).
+#[test]
+fn skip_wait_for_preferred_address() {
+    let (now, mut he) = setup_with_config(NetworkConfig {
+        wait_for_preferred_address: false,
+        ..NetworkConfig::default()
+    });
+
+    expect_initial_dns_queries(&mut he, now);
+    // HTTPS answer arrives, then A. AAAA (the preferred family) is still
+    // outstanding, but with the flag disabled we move on immediately instead of
+    // arming the resolution-delay timer.
+    he.input(in_dns_https_negative(Id::from(0)), now);
+    he.input(in_dns_a_positive(Id::from(2)), now);
+    he.expect(out_attempt_v4_h1_h2(Id::from(3)), now);
+    he.expect(out_connection_attempt_delay(), now);
+}
+
+/// `wait_for_preferred_address` only drops the wait for the preferred family.
+/// The resolution delay still applies while the HTTPS answer is outstanding.
+#[test]
+fn skip_wait_for_preferred_address_still_waits_for_https() {
+    let (now, mut he) = setup_with_config(NetworkConfig {
+        wait_for_preferred_address: false,
+        ..NetworkConfig::default()
+    });
+
+    expect_initial_dns_queries(&mut he, now);
+    // Only A has arrived; HTTPS and AAAA are still outstanding. Without the
+    // HTTPS answer we must not move on, so the resolution-delay timer is armed.
+    he.input(in_dns_a_positive(Id::from(2)), now);
+    he.expect(out_resolution_delay(), now);
+}
+
 /// Config with `version` disabled in `http_versions` and present as the sole alt-svc entry.
 fn alt_svc_disabled_config(version: HttpVersion) -> NetworkConfig {
     let http_versions = match version {
