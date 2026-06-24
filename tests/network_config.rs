@@ -4,8 +4,8 @@ use common::*;
 use std::time::{Duration, Instant};
 
 use happy_eyeballs::{
-    AltSvc, ConnectionAttemptHttpVersions, FailureReason, HappyEyeballs, HttpVersion, HttpVersions,
-    Id, NetworkConfig, Output,
+    AltSvc, ConnectionAttemptHttpVersions, DnsResult, FailureReason, HappyEyeballs, HttpVersion,
+    HttpVersions, Id, Input, IpPreference, NetworkConfig, Output,
 };
 
 #[test]
@@ -269,4 +269,140 @@ fn alt_svc_h2_disabled() {
 #[test]
 fn alt_svc_h1_disabled() {
     assert_alt_svc_version_disabled(HttpVersion::H1, ConnectionAttemptHttpVersions::H2);
+}
+
+/// With several IPv6 addresses, a single IPv4 address and an HTTP/3 alt-svc,
+/// the QUIC/IPv6 attempts must not be exhausted before IPv4 (a different
+/// address family) or TCP (a different protocol variant) alternatives are
+/// tried. The round-robin deals one endpoint from each group per round:
+///   V6:H3, V4:H3, V6:H2OrH1, V4:H2OrH1, V6_2:H3, V6_2:H2OrH1, V6_3:H3, V6_3:H2OrH1
+#[test]
+fn interleaves_protocol_variants_and_address_families() {
+    let config = NetworkConfig {
+        alt_svc: vec![AltSvc {
+            host: None,
+            port: None,
+            http_version: HttpVersion::H3,
+        }],
+        ..NetworkConfig::default()
+    };
+    let (mut now, mut he) = setup_with_config(config);
+
+    expect_initial_dns_queries(&mut he, now);
+    he.input(in_dns_https_negative(Id::from(0)), now);
+    he.expect(out_resolution_delay(), now);
+    he.input(
+        Input::DnsResult {
+            id: Id::from(1),
+            result: DnsResult::Aaaa(Ok(vec![V6_ADDR, V6_ADDR_2, V6_ADDR_3])),
+        },
+        now,
+    );
+    he.input(
+        Input::DnsResult {
+            id: Id::from(2),
+            result: DnsResult::A(Ok(vec![V4_ADDR])),
+        },
+        now,
+    );
+
+    // First attempt: the most preferred option, QUIC over IPv6.
+    he.expect(out_attempt_v6_h3(Id::from(3)), now);
+    he.expect(out_connection_attempt_delay(), now);
+
+    // The first round deals one endpoint from each group: IPv4 QUIC, then IPv6
+    // TCP, then IPv4 TCP, before the second round returns to the remaining IPv6
+    // addresses.
+    he.expect_connection_attempts(
+        [
+            out_attempt_v4_h3(Id::from(4)),
+            out_attempt_v6_h1_h2(Id::from(5)),
+            out_attempt_v4_h1_h2(Id::from(6)),
+            out_attempt(
+                Id::from(7),
+                V6_ADDR_2.into(),
+                PORT,
+                ConnectionAttemptHttpVersions::H3,
+            ),
+            out_attempt(
+                Id::from(8),
+                V6_ADDR_2.into(),
+                PORT,
+                ConnectionAttemptHttpVersions::H2OrH1,
+            ),
+            out_attempt(
+                Id::from(9),
+                V6_ADDR_3.into(),
+                PORT,
+                ConnectionAttemptHttpVersions::H3,
+            ),
+            out_attempt(
+                Id::from(10),
+                V6_ADDR_3.into(),
+                PORT,
+                ConnectionAttemptHttpVersions::H2OrH1,
+            ),
+        ],
+        &mut now,
+    );
+}
+
+/// Same interleaving with IPv4 preferred: the preferred family flips, so every
+/// round leads with IPv4 instead of IPv6.
+///   V4:H3, V6:H3, V4:H2OrH1, V6:H2OrH1, V4_2:H3, V4_2:H2OrH1
+#[test]
+fn interleaves_with_ipv4_preferred() {
+    let config = NetworkConfig {
+        ip: IpPreference::DualStackPreferV4,
+        alt_svc: vec![AltSvc {
+            host: None,
+            port: None,
+            http_version: HttpVersion::H3,
+        }],
+        ..NetworkConfig::default()
+    };
+    let (mut now, mut he) = setup_with_config(config);
+
+    expect_initial_dns_queries(&mut he, now);
+    he.input(in_dns_https_negative(Id::from(0)), now);
+    he.expect(out_resolution_delay(), now);
+    he.input(
+        Input::DnsResult {
+            id: Id::from(1),
+            result: DnsResult::Aaaa(Ok(vec![V6_ADDR])),
+        },
+        now,
+    );
+    he.input(
+        Input::DnsResult {
+            id: Id::from(2),
+            result: DnsResult::A(Ok(vec![V4_ADDR, V4_ADDR_2])),
+        },
+        now,
+    );
+
+    // First attempt: the most preferred option, now QUIC over IPv4.
+    he.expect(out_attempt_v4_h3(Id::from(3)), now);
+    he.expect(out_connection_attempt_delay(), now);
+
+    he.expect_connection_attempts(
+        [
+            out_attempt_v6_h3(Id::from(4)),
+            out_attempt_v4_h1_h2(Id::from(5)),
+            out_attempt_v6_h1_h2(Id::from(6)),
+            out_attempt(
+                Id::from(7),
+                V4_ADDR_2.into(),
+                PORT,
+                ConnectionAttemptHttpVersions::H3,
+            ),
+            out_attempt(
+                Id::from(8),
+                V4_ADDR_2.into(),
+                PORT,
+                ConnectionAttemptHttpVersions::H2OrH1,
+            ),
+        ],
+        &mut now,
+    );
 }
