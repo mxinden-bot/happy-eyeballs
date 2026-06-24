@@ -151,6 +151,23 @@ impl DnsResult {
         }
     }
 
+    /// Whether this response made `ip` available, either as an A/AAAA address
+    /// record or as an HTTPS RR `ipv4hint`/`ipv6hint`. Used to map a successful
+    /// connection's endpoint back to the DNS answer that resolved it.
+    fn contains_ip(&self, ip: IpAddr) -> bool {
+        match (self, ip) {
+            (DnsResult::A(Ok(addrs)), IpAddr::V4(v4)) => addrs.contains(&v4),
+            (DnsResult::Aaaa(Ok(addrs)), IpAddr::V6(v6)) => addrs.contains(&v6),
+            (DnsResult::Https(Ok(infos)), IpAddr::V4(v4)) => {
+                infos.iter().any(|i| i.ipv4_hints.contains(&v4))
+            }
+            (DnsResult::Https(Ok(infos)), IpAddr::V6(v6)) => {
+                infos.iter().any(|i| i.ipv6_hints.contains(&v6))
+            }
+            _ => false,
+        }
+    }
+
     fn ip_addrs(&self) -> impl Iterator<Item = IpAddr> + '_ {
         let v6 = match self {
             DnsResult::Aaaa(Ok(addrs)) => addrs.as_slice(),
@@ -244,6 +261,28 @@ pub enum Output {
     /// Failed to establish a connection, either due to DNS resolution failure
     /// or because all connection attempts have failed.
     Failed(FailureReason),
+}
+
+/// The DNS lookup interval to report for the connection that succeeded.
+///
+/// Happy Eyeballs resolves several record types (HTTPS, AAAA, A) in parallel and
+/// may race many connection attempts before one wins. Only the winning
+/// connection's resource is surfaced to the page, so its DNS phase is the one
+/// that belongs in Resource Timing's `domainLookupStart`/`domainLookupEnd`.
+///
+/// [`end`](Self::end) is the moment the record that actually resolved the
+/// winning endpoint's address became available, *not* the time the last DNS
+/// answer arrived nor the time the first connection attempt started. In a run
+/// where the A record arrives early but the winning connection only starts
+/// after slower HTTPS/AAAA answers and failed HTTP/3 attempts, the gap between
+/// [`end`](Self::end) and the connection start is connection-phase time, not DNS
+/// time, and must not be folded into the lookup interval.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DnsTiming {
+    /// When the resolving query was issued (maps to `domainLookupStart`).
+    pub start: Instant,
+    /// When the resolving record became available (maps to `domainLookupEnd`).
+    pub end: Instant,
 }
 
 /// Reason for a connection failure.
@@ -452,6 +491,11 @@ struct DnsQuery {
     id: Id,
     target_name: TargetName,
     record_type: DnsRecordType,
+    /// When the query was issued, i.e. the moment the corresponding
+    /// [`Output::SendDnsQuery`] was emitted. Together with the completion time
+    /// recorded in [`DnsQueryState::Completed`] this gives the lookup interval
+    /// reported by [`HappyEyeballs::dns_timing`].
+    started: Instant,
     state: DnsQueryState,
 }
 
@@ -953,11 +997,11 @@ impl HappyEyeballs {
         }
 
         // Send DNS queries.
-        if let Some(o) = self.send_dns_request() {
+        if let Some(o) = self.send_dns_request(now) {
             return Some(o);
         }
 
-        if let Some(o) = self.send_dns_request_for_target_name() {
+        if let Some(o) = self.send_dns_request_for_target_name(now) {
             return Some(o);
         }
 
@@ -1053,7 +1097,7 @@ impl HappyEyeballs {
             .map(|duration| Output::Timer { duration })
     }
 
-    fn send_dns_request(&mut self) -> Option<Output> {
+    fn send_dns_request(&mut self, now: Instant) -> Option<Output> {
         let target_name: TargetName = match &self.host {
             Host::Ip(_) => {
                 // No DNS queries needed for IP hosts.
@@ -1076,6 +1120,7 @@ impl HappyEyeballs {
                     id,
                     target_name: target_name.clone(),
                     record_type,
+                    started: now,
                     state: DnsQueryState::InProgress,
                 });
                 return Some(Output::SendDnsQuery {
@@ -1094,7 +1139,7 @@ impl HappyEyeballs {
     /// > for those TargetNames if they haven't yet received those records.
     ///
     /// <https://www.ietf.org/archive/id/draft-ietf-happy-happyeyeballs-v3-02.html#section-4.2.1>
-    fn send_dns_request_for_target_name(&mut self) -> Option<Output> {
+    fn send_dns_request_for_target_name(&mut self, now: Instant) -> Option<Output> {
         let any_ech = self.any_ech();
 
         let target_names = self
@@ -1124,6 +1169,7 @@ impl HappyEyeballs {
             id,
             target_name: target_name.clone(),
             record_type,
+            started: now,
             state: DnsQueryState::InProgress,
         });
         Some(Output::SendDnsQuery {
@@ -1419,6 +1465,40 @@ impl HappyEyeballs {
         self.connection_attempts
             .iter()
             .any(|a| a.state == ConnectionState::Succeeded)
+    }
+
+    /// The DNS lookup interval to report for the connection that succeeded, or
+    /// [`None`] if no connection has succeeded yet (or the host was an IP
+    /// literal, needing no lookup).
+    ///
+    /// The interval is taken from the DNS query that resolved the winning
+    /// endpoint's address: its [`start`](DnsTiming::start) is when that query
+    /// was issued, its [`end`](DnsTiming::end) is when the record became
+    /// available. When more than one received record carried the address (e.g.
+    /// an HTTPS `ipv4hint` and a later A record), the earliest completion wins,
+    /// since that is when the address first became usable.
+    ///
+    /// See [`DnsTiming`] for why this is anchored to the resolving record rather
+    /// than to the connection attempt.
+    #[must_use]
+    pub fn dns_timing(&self) -> Option<DnsTiming> {
+        let winner = self
+            .connection_attempts
+            .iter()
+            .find(|a| a.state == ConnectionState::Succeeded)?;
+        let ip = winner.endpoint.address.ip();
+
+        self.dns_queries
+            .iter()
+            .filter_map(|q| match &q.state {
+                DnsQueryState::Completed {
+                    completed,
+                    response,
+                } if response.contains_ip(ip) => Some((q.started, *completed)),
+                _ => None,
+            })
+            .min_by_key(|(_, completed)| *completed)
+            .map(|(start, end)| DnsTiming { start, end })
     }
 
     fn failed(&self) -> Option<FailureReason> {
