@@ -594,6 +594,25 @@ pub struct NetworkConfig {
     ///
     /// Defaults to `true`.
     pub ech: bool,
+    /// Whether to wait for an answer for the preferred address family before
+    /// moving on to the connection phase.
+    ///
+    /// Per the spec, moving on without waiting out the resolution delay
+    /// requires a positive or negative answer for the preferred address family
+    /// (e.g. AAAA when IPv6 is preferred). When that answer is slow to arrive,
+    /// a client that already has the non-preferred family (e.g. A) still waits
+    /// out the [`resolution_delay`](Self::resolution_delay).
+    ///
+    /// When `false`, that requirement is dropped: once positive address answers
+    /// have been received and the SVCB/HTTPS query has completed (whether with a
+    /// positive or a negative response), the state machine moves on without
+    /// waiting for the preferred address family answer (and thus without the
+    /// resolution delay when the non-preferred family arrives first). The delay
+    /// still applies while the SVCB/HTTPS query is outstanding.
+    ///
+    /// Defaults to `true`, matching
+    /// <https://www.ietf.org/archive/id/draft-ietf-happy-happyeyeballs-v3-02.html#section-4.2>.
+    pub wait_for_preferred_address: bool,
 }
 
 impl Default for NetworkConfig {
@@ -605,6 +624,7 @@ impl Default for NetworkConfig {
             resolution_delay: RESOLUTION_DELAY,
             connection_attempt_delay: CONNECTION_ATTEMPT_DELAY,
             ech: true,
+            wait_for_preferred_address: true,
         }
     }
 }
@@ -1468,11 +1488,16 @@ impl HappyEyeballs {
         // > for the preferred address family that was queried AND
         //
         // <https://www.ietf.org/archive/id/draft-ietf-happy-happyeyeballs-v3-02.html#section-4.2>
-        if !self
-            .dns_queries
-            .iter()
-            .filter(|q| q.is_completed())
-            .any(|q| q.record_type == self.network_config.preferred_dns_record_type())
+        //
+        // Skipped when `wait_for_preferred_address` is disabled, letting the
+        // state machine move on with the non-preferred family rather than
+        // waiting out the resolution delay for the preferred one.
+        if self.network_config.wait_for_preferred_address
+            && !self
+                .dns_queries
+                .iter()
+                .filter(|q| q.is_completed())
+                .any(|q| q.record_type == self.network_config.preferred_dns_record_type())
         {
             return false;
         }
