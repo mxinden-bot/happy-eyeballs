@@ -235,6 +235,29 @@ fn skip_wait_for_preferred_address() {
     he.expect(out_connection_attempt_delay(), now);
 }
 
+/// Symmetric to [`skip_wait_for_preferred_address`] but with
+/// `DualStackPreferV4`, so the preferred family is A and the non-preferred AAAA
+/// arrives first. With the flag disabled, the AAAA answer plus an HTTPS answer
+/// is enough to move on, without waiting out the resolution delay for the
+/// preferred family (A).
+#[test]
+fn skip_wait_for_preferred_address_v4_preferred() {
+    let (now, mut he) = setup_with_config(NetworkConfig {
+        ip: IpPreference::DualStackPreferV4,
+        wait_for_preferred_address: false,
+        ..NetworkConfig::default()
+    });
+
+    expect_initial_dns_queries(&mut he, now);
+    // HTTPS answer arrives, then AAAA. A (the preferred family) is still
+    // outstanding, but with the flag disabled we move on immediately instead of
+    // arming the resolution-delay timer.
+    he.input(in_dns_https_negative(Id::from(0)), now);
+    he.input(in_dns_aaaa_positive(Id::from(1)), now);
+    he.expect(out_attempt_v6_h1_h2(Id::from(3)), now);
+    he.expect(out_connection_attempt_delay(), now);
+}
+
 /// `wait_for_preferred_address` only drops the wait for the preferred family.
 /// The resolution delay still applies while the HTTPS answer is outstanding.
 #[test]

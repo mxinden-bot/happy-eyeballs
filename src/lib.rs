@@ -604,11 +604,11 @@ pub struct NetworkConfig {
     /// out the [`resolution_delay`](Self::resolution_delay).
     ///
     /// When `false`, that requirement is dropped: once positive address answers
-    /// and SVCB/HTTPS service information are available, the state machine moves
-    /// on without waiting for the preferred address family answer (and thus
-    /// without the resolution delay when the non-preferred family arrives
-    /// first). The delay still applies while SVCB/HTTPS information is
-    /// outstanding.
+    /// have been received and the SVCB/HTTPS query has completed (whether with a
+    /// positive or a negative response), the state machine moves on without
+    /// waiting for the preferred address family answer (and thus without the
+    /// resolution delay when the non-preferred family arrives first). The delay
+    /// still applies while the SVCB/HTTPS query is outstanding.
     ///
     /// Defaults to `true`, matching
     /// <https://www.ietf.org/archive/id/draft-ietf-happy-happyeyeballs-v3-02.html#section-4.2>.
