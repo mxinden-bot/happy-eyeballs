@@ -52,6 +52,7 @@ use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::fmt::Debug;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::num::NonZeroU32;
 use std::time::{Duration, Instant};
 
 use log::trace;
@@ -72,6 +73,11 @@ pub const RESOLUTION_DELAY: Duration = Duration::from_millis(50);
 ///
 /// <https://www.ietf.org/archive/id/draft-ietf-happy-happyeyeballs-v3-02.html#section-9>
 pub const CONNECTION_ATTEMPT_DELAY: Duration = Duration::from_millis(250);
+
+/// The default multiplier applied to the connection attempt delay after each
+/// successive attempt. A value of `1` keeps the delay constant, matching the
+/// RFC behavior.
+pub const CONNECTION_ATTEMPT_DELAY_MULTIPLIER: NonZeroU32 = NonZeroU32::MIN;
 
 /// Input events to the Happy Eyeballs state machine
 #[derive(Debug, Clone, PartialEq)]
@@ -587,6 +593,23 @@ pub struct NetworkConfig {
     /// Defaults to [`CONNECTION_ATTEMPT_DELAY`] (250 ms) per
     /// <https://www.ietf.org/archive/id/draft-ietf-happy-happyeyeballs-v3-02.html#section-9>.
     pub connection_attempt_delay: Duration,
+    /// Multiplier applied to [`connection_attempt_delay`](Self::connection_attempt_delay)
+    /// as concurrent connection attempts pile up, growing the delay
+    /// exponentially.
+    ///
+    /// The delay before starting another attempt while `n` attempts are already
+    /// in progress is `connection_attempt_delay * multiplier^(n - 1)`. With a
+    /// base delay of 250 ms and a multiplier of `2`, racing attempts are
+    /// scheduled at `t=0`, `t=250`, `t=750`, `t=1750`, ... (intervals of 250,
+    /// 500, 1000 ms). This lets callers lower the base delay below the
+    /// RFC-recommended 250 ms while still backing off between attempts.
+    ///
+    /// Only in-progress attempts count, so attempts triggered by a previous
+    /// attempt failing do not grow the delay.
+    ///
+    /// Defaults to [`CONNECTION_ATTEMPT_DELAY_MULTIPLIER`] (`1`), which keeps the
+    /// delay constant per the RFC.
+    pub connection_attempt_delay_multiplier: NonZeroU32,
     /// Whether Encrypted Client Hello (ECH) is enabled.
     ///
     /// When `false`, ECH configs from HTTPS records are ignored: endpoints
@@ -605,6 +628,7 @@ impl Default for NetworkConfig {
             alt_svc: Vec::new(),
             resolution_delay: RESOLUTION_DELAY,
             connection_attempt_delay: CONNECTION_ATTEMPT_DELAY,
+            connection_attempt_delay_multiplier: CONNECTION_ATTEMPT_DELAY_MULTIPLIER,
             ech: true,
         }
     }
@@ -868,6 +892,32 @@ impl HappyEyeballs {
         None
     }
 
+    /// The delay to wait before starting the next connection attempt, growing
+    /// exponentially with the number of attempts currently in progress per the
+    /// configured [`connection_attempt_delay_multiplier`](NetworkConfig::connection_attempt_delay_multiplier).
+    ///
+    /// Only in-progress (racing) attempts count: an attempt that has already
+    /// failed does not inflate the delay, so a sequence of attempts each
+    /// triggered by the previous one failing keeps the base delay.
+    fn connection_attempt_delay(&self) -> Duration {
+        let base = self.network_config.connection_attempt_delay;
+        let in_progress = self
+            .connection_attempts
+            .iter()
+            .filter(|a| a.state == ConnectionState::InProgress)
+            .count();
+        let exponent = u32::try_from(in_progress)
+            .unwrap_or(u32::MAX)
+            .saturating_sub(1);
+        let factor = self
+            .network_config
+            .connection_attempt_delay_multiplier
+            .get()
+            .checked_pow(exponent)
+            .unwrap_or(u32::MAX);
+        base.checked_mul(factor).unwrap_or(Duration::MAX)
+    }
+
     fn delay(&self, now: Instant) -> Option<Output> {
         // If we have a successful connection, no connection attempt delay
         // needed.
@@ -875,7 +925,8 @@ impl HappyEyeballs {
             return None;
         }
 
-        if let Some(connection_attempt_delay) = self
+        let connection_attempt_delay = self.connection_attempt_delay();
+        if let Some(remaining) = self
             .connection_attempts
             .iter()
             .filter(|a| a.state == ConnectionState::InProgress)
@@ -883,15 +934,15 @@ impl HappyEyeballs {
             .max()
             .and_then(|started| {
                 let elapsed = now.duration_since(*started);
-                if elapsed < self.network_config.connection_attempt_delay {
-                    Some(self.network_config.connection_attempt_delay - elapsed)
+                if elapsed < connection_attempt_delay {
+                    Some(connection_attempt_delay - elapsed)
                 } else {
                     None
                 }
             })
         {
             return Some(Output::Timer {
-                duration: connection_attempt_delay,
+                duration: remaining,
             });
         }
 
@@ -1125,11 +1176,12 @@ impl HappyEyeballs {
             return None;
         }
 
+        let connection_attempt_delay = self.connection_attempt_delay();
         if self
             .connection_attempts
             .iter()
             .filter(|a| a.state == ConnectionState::InProgress)
-            .any(|a| a.within_delay(now, self.network_config.connection_attempt_delay))
+            .any(|a| a.within_delay(now, connection_attempt_delay))
         {
             return None;
         }
