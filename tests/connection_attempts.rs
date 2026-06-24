@@ -4,7 +4,7 @@
 mod common;
 use common::*;
 
-use std::{net::SocketAddr, time::Duration};
+use std::{net::SocketAddr, num::NonZeroU32, time::Duration};
 
 use happy_eyeballs::{
     CONNECTION_ATTEMPT_DELAY, ConnectionAttemptHttpVersions, DnsResult, Endpoint, Id, Input,
@@ -49,6 +49,80 @@ fn connection_attempt_delay() {
     now += CONNECTION_ATTEMPT_DELAY;
 
     he.expect(out_attempt_v4_h1_h2(Id::from(4)), now);
+}
+
+/// With a multiplier of 2, the delay before each successive connection attempt
+/// doubles: attempts land at t=0, t=250, t=750, t=1750.
+#[test]
+fn connection_attempt_delay_multiplier() {
+    let base = Duration::from_millis(250);
+    let (mut now, mut he) = setup_with_config(NetworkConfig {
+        connection_attempt_delay: base,
+        connection_attempt_delay_multiplier: NonZeroU32::new(2).unwrap(),
+        ..NetworkConfig::default()
+    });
+
+    expect_initial_dns_queries(&mut he, now);
+    he.input(in_dns_https_negative(Id::from(0)), now);
+    he.expect(out_resolution_delay(), now);
+    he.input(
+        Input::DnsResult {
+            id: Id::from(1),
+            result: DnsResult::Aaaa(Ok(vec![V6_ADDR, V6_ADDR_2, V6_ADDR_3])),
+        },
+        now,
+    );
+
+    // First attempt at t=0; one attempt in flight, so the next is one base
+    // delay away.
+    he.expect(out_attempt_v6_h1_h2(Id::from(3)), now);
+    he.expect(Output::Timer { duration: base }, now);
+
+    // Second attempt at t=250 (after base * 2^0). The next delay then doubles.
+    now += base;
+    let second = he.process_output(now).unwrap().attempt().unwrap();
+    assert_eq!(second.address.ip(), V6_ADDR_2);
+    he.expect(Output::Timer { duration: base * 2 }, now);
+
+    // Third attempt at t=750 (after base * 2^1). The next delay doubles again.
+    now += base * 2;
+    let third = he.process_output(now).unwrap().attempt().unwrap();
+    assert_eq!(third.address.ip(), V6_ADDR_3);
+    he.expect(Output::Timer { duration: base * 4 }, now);
+}
+
+/// Attempts triggered by a previous attempt failing must not grow the delay:
+/// only concurrently in-progress attempts increase it. With one attempt in
+/// progress the delay stays at the base value even after an earlier failure.
+#[test]
+fn failed_attempts_do_not_increase_delay() {
+    let base = Duration::from_millis(250);
+    let (now, mut he) = setup_with_config(NetworkConfig {
+        connection_attempt_delay: base,
+        connection_attempt_delay_multiplier: NonZeroU32::new(2).unwrap(),
+        ..NetworkConfig::default()
+    });
+
+    expect_initial_dns_queries(&mut he, now);
+    he.input(in_dns_https_negative(Id::from(0)), now);
+    he.expect(out_resolution_delay(), now);
+    he.input(
+        Input::DnsResult {
+            id: Id::from(1),
+            result: DnsResult::Aaaa(Ok(vec![V6_ADDR, V6_ADDR_2])),
+        },
+        now,
+    );
+
+    // First attempt, then fail it: the next attempt starts immediately.
+    he.expect(out_attempt_v6_h1_h2(Id::from(3)), now);
+    he.input(in_connection_result_negative(Id::from(3)), now);
+    let second = he.process_output(now).unwrap().attempt().unwrap();
+    assert_eq!(second.address.ip(), V6_ADDR_2);
+
+    // Only one attempt is in progress, so the delay stays at the base value
+    // rather than growing because a previous attempt failed.
+    he.expect(Output::Timer { duration: base }, now);
 }
 
 #[test]
