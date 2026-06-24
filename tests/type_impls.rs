@@ -2,7 +2,7 @@ mod common;
 use common::*;
 
 use happy_eyeballs::{
-    ConnectionResult, EchConfig, HttpVersion, Id, Input, ServiceInfo, TargetName,
+    AlpnHttpVersions, ConnectionResult, EchConfig, HttpVersion, Id, Input, ServiceInfo, TargetName,
 };
 
 #[test]
@@ -30,7 +30,7 @@ fn service_info_debug() {
     let full = ServiceInfo {
         priority: 1,
         target_name: HOSTNAME.into(),
-        alpn_http_versions: [HttpVersion::H3].into(),
+        alpn_http_versions: AlpnHttpVersions::new(HttpVersion::H3),
         ech_config: Some(ech_config()),
         ipv4_hints: vec![V4_ADDR],
         ipv6_hints: vec![V6_ADDR],
@@ -41,16 +41,17 @@ fn service_info_debug() {
     assert!(s.contains("ipv4"), "missing 'ipv4': {s}");
     assert!(s.contains("ipv6"), "missing 'ipv6': {s}");
 
-    // With optional fields empty: conditional fields must not appear.
+    // With optional fields empty: those conditional fields must not appear.
+    // ALPN is always present because the set is non-empty by construction.
     let bare = ServiceInfo {
-        alpn_http_versions: Default::default(),
+        alpn_http_versions: AlpnHttpVersions::new(HttpVersion::H3),
         ech_config: None,
         ipv4_hints: vec![],
         ipv6_hints: vec![],
         ..full
     };
     let s = format!("{bare:?}");
-    assert!(!s.contains("alpn"), "unexpected 'alpn': {s}");
+    assert!(s.contains("alpn"), "missing 'alpn': {s}");
     assert!(!s.contains("ipv4"), "unexpected 'ipv4': {s}");
     assert!(!s.contains("ipv6"), "unexpected 'ipv6': {s}");
 }

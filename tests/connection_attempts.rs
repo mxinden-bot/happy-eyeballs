@@ -39,7 +39,7 @@ fn connection_attempt_delay() {
     let (mut now, mut he) = setup();
 
     expect_initial_dns_queries(&mut he, now);
-    he.input(in_dns_https_positive_no_alpn(Id::from(0)), now);
+    he.input(in_dns_https_positive_empty(Id::from(0)), now);
     he.expect(out_resolution_delay(), now);
     he.input(in_dns_aaaa_positive(Id::from(1)), now);
     he.expect(out_attempt_v6_h1_h2(Id::from(3)), now);
@@ -147,7 +147,7 @@ fn successful_connection_cancels_others() {
     let (mut now, mut he) = setup();
 
     expect_initial_dns_queries(&mut he, now);
-    he.input(in_dns_https_positive_no_alpn(Id::from(0)), now);
+    he.input(in_dns_https_positive_empty(Id::from(0)), now);
     he.expect(out_resolution_delay(), now);
     he.input(
         Input::DnsResult {
@@ -194,7 +194,7 @@ fn failed_connection_tries_next_immediately() {
     let (now, mut he) = setup();
 
     expect_initial_dns_queries(&mut he, now);
-    he.input(in_dns_https_positive_no_alpn(Id::from(0)), now);
+    he.input(in_dns_https_positive_empty(Id::from(0)), now);
     he.expect(out_resolution_delay(), now);
     he.input(in_dns_aaaa_positive(Id::from(1)), now);
     he.expect(out_attempt_v6_h1_h2(Id::from(3)), now);
@@ -210,7 +210,7 @@ fn successful_connection_emits_succeeded() {
     let (now, mut he) = setup();
 
     expect_initial_dns_queries(&mut he, now);
-    he.input(in_dns_https_positive_no_alpn(Id::from(0)), now);
+    he.input(in_dns_https_positive_empty(Id::from(0)), now);
     he.expect(out_resolution_delay(), now);
     he.input(in_dns_aaaa_positive(Id::from(1)), now);
     he.expect(out_attempt_v6_h1_h2(Id::from(3)), now);
@@ -223,7 +223,7 @@ fn succeeded_keeps_emitting_succeeded() {
     let (now, mut he) = setup();
 
     expect_initial_dns_queries(&mut he, now);
-    he.input(in_dns_https_positive_no_alpn(Id::from(0)), now);
+    he.input(in_dns_https_positive_empty(Id::from(0)), now);
     he.expect(out_resolution_delay(), now);
     he.input(in_dns_aaaa_positive(Id::from(1)), now);
     he.expect(out_attempt_v6_h1_h2(Id::from(3)), now);
@@ -265,7 +265,7 @@ fn cancelled_connection_result_ignored() {
     let (mut now, mut he) = setup();
 
     expect_initial_dns_queries(&mut he, now);
-    he.input(in_dns_https_positive_no_alpn(Id::from(0)), now);
+    he.input(in_dns_https_positive_empty(Id::from(0)), now);
     he.expect(out_resolution_delay(), now);
     he.input(in_dns_aaaa_positive(Id::from(1)), now);
     he.expect(out_attempt_v6_h1_h2(Id::from(3)), now);

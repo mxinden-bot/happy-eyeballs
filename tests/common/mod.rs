@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use std::{
+    collections::HashSet,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     time::Instant,
 };
@@ -35,7 +36,12 @@ pub fn service_info(priority: u16, target_name: &str, alpns: &[HttpVersion]) -> 
     ServiceInfo {
         priority,
         target_name: target_name.into(),
-        alpn_http_versions: alpns.iter().copied().collect(),
+        alpn_http_versions: alpns
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>()
+            .try_into()
+            .expect("service_info requires at least one ALPN version"),
         ipv6_hints: vec![],
         ipv4_hints: vec![],
         ech_config: None,
@@ -151,10 +157,12 @@ pub fn in_dns_https_positive_ech(id: Id) -> Input {
     }
 }
 
-pub fn in_dns_https_positive_no_alpn(id: Id) -> Input {
+/// A positive HTTPS response that carries no usable ServiceMode records, so the
+/// connection attempts come entirely from the origin fallback (default H1/H2).
+pub fn in_dns_https_positive_empty(id: Id) -> Input {
     Input::DnsResult {
         id,
-        result: DnsResult::Https(Ok(vec![service_info(1, HOSTNAME, &[])])),
+        result: DnsResult::Https(Ok(vec![])),
     }
 }
 

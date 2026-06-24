@@ -43,7 +43,7 @@ fn all_connections_failed() {
     let (now, mut he) = setup();
 
     expect_initial_dns_queries(&mut he, now);
-    he.input(in_dns_https_positive_no_alpn(Id::from(0)), now);
+    he.input(in_dns_https_positive_empty(Id::from(0)), now);
     he.expect(out_resolution_delay(), now);
     he.input(in_dns_aaaa_positive(Id::from(1)), now);
     he.expect(out_attempt_v6_h1_h2(Id::from(3)), now);
@@ -85,7 +85,7 @@ fn first_connection_fails_second_succeeds() {
     let (now, mut he) = setup();
 
     expect_initial_dns_queries(&mut he, now);
-    he.input(in_dns_https_positive_no_alpn(Id::from(0)), now);
+    he.input(in_dns_https_positive_empty(Id::from(0)), now);
     he.expect(out_resolution_delay(), now);
     he.input(in_dns_aaaa_positive(Id::from(1)), now);
     he.expect(out_attempt_v6_h1_h2(Id::from(3)), now);

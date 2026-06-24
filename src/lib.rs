@@ -277,7 +277,7 @@ pub enum DnsRecordType {
 pub struct ServiceInfo {
     pub priority: u16,
     pub target_name: TargetName,
-    pub alpn_http_versions: HashSet<HttpVersion>,
+    pub alpn_http_versions: AlpnHttpVersions,
     pub ech_config: Option<EchConfig>,
     pub ipv4_hints: Vec<Ipv4Addr>,
     pub ipv6_hints: Vec<Ipv6Addr>,
@@ -291,9 +291,7 @@ impl Debug for ServiceInfo {
         debug_struct.field("priority", &self.priority);
         debug_struct.field("target", &self.target_name);
 
-        if !self.alpn_http_versions.is_empty() {
-            debug_struct.field("alpn", &self.alpn_http_versions);
-        }
+        debug_struct.field("alpn", &self.alpn_http_versions);
 
         if self.ech_config.is_some() {
             debug_struct.field("ech", &self.ech_config);
@@ -353,12 +351,13 @@ impl ServiceInfo {
         // record's. Assembling the "SVCB ALPN set" -- including adding the
         // scheme default ("http/1.1" for "https") when no "alpn" is present --
         // is the caller's responsibility when interpreting the record (RFC 9460
-        // Section 7.1.1). A record that still carries no ALPN here is not usable
-        // (a "no-default-alpn" record without "alpn" is not even self-consistent,
-        // Section 2.4.3) and yields no endpoints.
+        // Section 7.1.1). That set is non-empty by construction (see
+        // [`AlpnHttpVersions`]); the only way `versions` ends up empty here is the
+        // client disabling every version the record offers, in which case the
+        // record yields no endpoints.
         //
         // <https://www.rfc-editor.org/rfc/rfc9460#section-7.1.1>
-        let mut versions = self.alpn_http_versions.clone();
+        let mut versions: HashSet<HttpVersion> = self.alpn_http_versions.iter().copied().collect();
         enabled_http_versions.filter_disabled(&mut versions);
         let http_versions = ConnectionAttemptHttpVersions::from_http_versions(&versions);
 
@@ -402,6 +401,74 @@ pub enum HttpVersion {
     H3,
     H2,
     H1,
+}
+
+/// A non-empty set of [`HttpVersion`]s, the "SVCB ALPN set" of a
+/// [`ServiceInfo`].
+///
+/// RFC 9460 Section 7.1.1 requires this set to be non-empty: a record without
+/// an "alpn" SvcParam takes on the scheme's default ALPN ("http/1.1" for
+/// "https"), and a "no-default-alpn" record is only self-consistent when it
+/// also carries "alpn". Assembling that set is the caller's responsibility;
+/// keeping it non-empty by construction makes a record that offers no protocol
+/// at all unrepresentable.
+///
+/// <https://www.rfc-editor.org/rfc/rfc9460#section-7.1.1>
+#[derive(Clone, PartialEq, Eq)]
+pub struct AlpnHttpVersions(HashSet<HttpVersion>);
+
+/// Error returned when constructing an [`AlpnHttpVersions`] from an empty set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[error("ALPN HTTP version set must not be empty")]
+pub struct EmptyAlpnHttpVersions;
+
+impl AlpnHttpVersions {
+    /// Create a set seeded with `version`; add more with [`insert`](Self::insert).
+    pub fn new(version: HttpVersion) -> Self {
+        Self(HashSet::from([version]))
+    }
+
+    /// Add `version` to the set, returning whether it was newly inserted.
+    pub fn insert(&mut self, version: HttpVersion) -> bool {
+        self.0.insert(version)
+    }
+
+    /// Whether `version` is in the set.
+    pub fn contains(&self, version: &HttpVersion) -> bool {
+        self.0.contains(version)
+    }
+
+    /// Iterate over the contained versions.
+    pub fn iter(&self) -> impl Iterator<Item = &HttpVersion> {
+        self.0.iter()
+    }
+}
+
+impl TryFrom<HashSet<HttpVersion>> for AlpnHttpVersions {
+    type Error = EmptyAlpnHttpVersions;
+
+    fn try_from(versions: HashSet<HttpVersion>) -> Result<Self, Self::Error> {
+        if versions.is_empty() {
+            Err(EmptyAlpnHttpVersions)
+        } else {
+            Ok(Self(versions))
+        }
+    }
+}
+
+impl<'a> IntoIterator for &'a AlpnHttpVersions {
+    type Item = &'a HttpVersion;
+    type IntoIter = std::collections::hash_set::Iter<'a, HttpVersion>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
+impl Debug for AlpnHttpVersions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
 }
 
 /// Possible connection attempt HTTP version combinations.

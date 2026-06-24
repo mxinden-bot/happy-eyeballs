@@ -159,7 +159,7 @@ fn move_on_non_timeout() {
 
     for test_case in test_cases {
         for https in [
-            in_dns_https_positive_no_alpn(Id::from(0)),
+            in_dns_https_positive_empty(Id::from(0)),
             in_dns_https_negative(Id::from(0)),
         ] {
             let (now, mut he) = setup_with_config(test_case.address_family.clone());
