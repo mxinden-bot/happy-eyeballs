@@ -451,6 +451,7 @@ fn refresh_dropping_ech_takes_preference() {
                 ech_config: Some(ech_config()),
             },
             is_ech_retry: false,
+            optimistic: false,
         },
         now,
     );

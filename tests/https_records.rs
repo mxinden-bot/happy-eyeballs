@@ -42,6 +42,7 @@ fn ech_config_propagated_to_endpoint() {
                 ech_config: Some(ech_config()),
             },
             is_ech_retry: false,
+            optimistic: false,
         },
         now,
     );
@@ -282,6 +283,7 @@ fn ech_disabled() {
                 ech_config: None,
             },
             is_ech_retry: false,
+            optimistic: false,
         },
         now,
     );
@@ -296,6 +298,7 @@ fn ech_disabled() {
                 ech_config: None,
             },
             is_ech_retry: false,
+            optimistic: false,
         }],
         &mut now,
     );
@@ -327,6 +330,7 @@ fn ech_config_from_https_applies_to_aaaa() {
                 ech_config: Some(ech_config()),
             },
             is_ech_retry: false,
+            optimistic: false,
         },
         now,
     );
@@ -349,6 +353,7 @@ fn multiple_target_names() {
                 ech_config: None,
             },
             is_ech_retry: false,
+            optimistic: false,
         },
         now,
     );
@@ -422,6 +427,7 @@ fn partial_ech_two_service_infos() {
                 ech_config: Some(ech_config()),
             },
             is_ech_retry: false,
+            optimistic: false,
         },
         now,
     );
@@ -497,6 +503,7 @@ fn both_service_infos_have_ech_no_origin_fallback() {
                 ech_config: Some(ech_config()),
             },
             is_ech_retry: false,
+            optimistic: false,
         },
         now,
     );
@@ -529,6 +536,7 @@ fn both_service_infos_have_ech_no_origin_fallback() {
                     ech_config: Some(ech_config()),
                 },
                 is_ech_retry: false,
+                optimistic: false,
             },
         ],
         &mut now,
@@ -801,6 +809,7 @@ fn partial_ech_with_alt_svc() {
                 ech_config: Some(ech_config()),
             },
             is_ech_retry: false,
+            optimistic: false,
         },
         now,
     );
@@ -905,6 +914,7 @@ fn https_port_svcparam_applies_but_fallbacks_follow() {
                 ech_config: None,
             },
             is_ech_retry: false,
+            optimistic: false,
         },
         now,
     );
@@ -954,6 +964,7 @@ fn https_two_service_infos_with_different_ports() {
                     ech_config: None,
                 },
                 is_ech_retry: false,
+                optimistic: false,
             }
         };
 
@@ -1083,6 +1094,7 @@ fn https_svc1_addresses_trigger_additional_attempts() {
                 ech_config: None,
             },
             is_ech_retry: false,
+            optimistic: false,
         }
     };
 
@@ -1259,6 +1271,7 @@ fn target_name_redirect_addresses_used_in_connection_attempts() {
                 ech_config: None,
             },
             is_ech_retry: false,
+            optimistic: false,
         },
         now,
     );
@@ -1291,6 +1304,7 @@ fn target_name_redirect_addresses_used_in_connection_attempts() {
                     ech_config: None,
                 },
                 is_ech_retry: false,
+                optimistic: false,
             },
             // fallback bucket (origin)
             out_attempt_v6_h1_h2(Id::from(7)),
@@ -1378,6 +1392,7 @@ fn ech_retry_same_endpoint() {
                 ech_config: Some(ech_config()),
             },
             is_ech_retry: false,
+            optimistic: false,
         },
         now,
     );
@@ -1402,6 +1417,7 @@ fn ech_retry_same_endpoint() {
                 ech_config: Some(new_ech_config),
             },
             is_ech_retry: true,
+            optimistic: false,
         },
         now,
     );
@@ -1439,6 +1455,7 @@ fn ech_retry_without_ech_sets_flag() {
                 ech_config: Some(ech_config()),
             },
             is_ech_retry: false,
+            optimistic: false,
         },
         now,
     );
@@ -1459,6 +1476,7 @@ fn ech_retry_without_ech_sets_flag() {
                 ech_config: Some(empty_ech_config),
             },
             is_ech_retry: true,
+            optimistic: false,
         },
         now,
     );
@@ -1500,6 +1518,7 @@ fn ech_retry_no_infinite_loop() {
                 ech_config: Some(ech_config()),
             },
             is_ech_retry: false,
+            optimistic: false,
         },
         now,
     );
@@ -1521,6 +1540,7 @@ fn ech_retry_no_infinite_loop() {
                 ech_config: Some(retry_ech_config),
             },
             is_ech_retry: true,
+            optimistic: false,
         },
         now,
     );
@@ -1547,6 +1567,7 @@ fn ech_retry_no_infinite_loop() {
                 ech_config: Some(ech_config()),
             },
             is_ech_retry: false,
+            optimistic: false,
         },
         now,
     );

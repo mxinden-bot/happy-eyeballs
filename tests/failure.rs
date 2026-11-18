@@ -78,6 +78,7 @@ fn ip_host_connection_failure() {
                 ech_config: None,
             },
             is_ech_retry: false,
+            optimistic: false,
         },
         now,
     );

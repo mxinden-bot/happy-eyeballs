@@ -32,7 +32,7 @@
 //!             // answer from an expired cache entry (Optimistic DNS).
 //! #           dns_id = Some(id);
 //!         }
-//!         Output::AttemptConnection { id, endpoint, is_ech_retry } => {
+//!         Output::AttemptConnection { id, endpoint, is_ech_retry, optimistic } => {
 //!             // Attempt connection.
 //!         }
 //!         _ => {}
@@ -315,10 +315,17 @@ pub enum Output {
     /// `is_ech_retry` is `true` iff this attempt was scheduled in response to
     /// a [`ConnectionResult::EchRetry`] on a prior attempt (i.e. an in-band
     /// ECH configuration update).
+    ///
+    /// `optimistic` is `true` iff this is an optimistic HTTP/3 attempt, made
+    /// without any signal that the origin supports HTTP/3. See
+    /// [`NetworkConfig::optimistic_quic`]. The caller should send a single QUIC
+    /// handshake flight only and give up on the attempt if it goes unanswered,
+    /// instead of retransmitting.
     AttemptConnection {
         id: Id,
         endpoint: Endpoint,
         is_ech_retry: bool,
+        optimistic: bool,
     },
 
     /// Cancel a connection attempt
@@ -798,6 +805,22 @@ pub struct NetworkConfig {
     ///
     /// Defaults to [`ResolutionMode::Ip`], the normal Happy Eyeballs path.
     pub resolution: ResolutionMode,
+    /// Whether to optimistically attempt HTTP/3 when nothing signals that the
+    /// origin supports it.
+    ///
+    /// When enabled, HTTP/3 is enabled, the origin is a domain resolved by IP
+    /// ([`ResolutionMode::Ip`]), there are no alt-svc entries, and the origin's
+    /// HTTPS query completed without any service information, a single HTTP/3
+    /// connection attempt is made to the first origin address of the preferred
+    /// family, flagged `optimistic` on [`Output::AttemptConnection`].
+    ///
+    /// The optimistic attempt is started right after the first regular
+    /// connection attempt, bypassing the connection attempt delay, and does not
+    /// delay subsequent regular attempts: it races alongside them at little
+    /// cost, as the caller sends a single QUIC handshake flight only.
+    ///
+    /// Defaults to `false`.
+    pub optimistic_quic: bool,
 }
 
 /// How the origin host is turned into connection attempts.
@@ -862,6 +885,7 @@ impl Default for NetworkConfig {
             ech: true,
             wait_for_preferred_address: true,
             resolution: ResolutionMode::Ip,
+            optimistic_quic: false,
         }
     }
 }
@@ -908,6 +932,9 @@ pub struct ConnectionAttempt {
     /// Per RFC 9849 Section 6.1.6, a second `EchRetry` on such an attempt
     /// must be treated as a failure.
     pub is_ech_retry: bool,
+    /// Whether this is an optimistic HTTP/3 attempt. See
+    /// [`NetworkConfig::optimistic_quic`].
+    pub optimistic: bool,
 }
 
 impl ConnectionAttempt {
@@ -1273,11 +1300,7 @@ impl HappyEyeballs {
     /// triggered by the previous one failing keeps the base delay.
     fn connection_attempt_delay(&self) -> Duration {
         let base = self.network_config.connection_attempt_delay;
-        let in_progress = self
-            .connection_attempts
-            .iter()
-            .filter(|a| a.state == ConnectionState::InProgress)
-            .count();
+        let in_progress = self.racing_attempts_in_progress().count();
         let exponent = u32::try_from(in_progress)
             .unwrap_or(u32::MAX)
             .saturating_sub(1);
@@ -1299,9 +1322,7 @@ impl HappyEyeballs {
 
         let connection_attempt_delay = self.connection_attempt_delay();
         if let Some(remaining) = self
-            .connection_attempts
-            .iter()
-            .filter(|a| a.state == ConnectionState::InProgress)
+            .racing_attempts_in_progress()
             .map(|a| &a.started)
             .max()
             .and_then(|started| {
@@ -1659,11 +1680,13 @@ impl HappyEyeballs {
             return None;
         }
 
+        if let Some(o) = self.optimistic_attempt(now) {
+            return Some(o);
+        }
+
         let connection_attempt_delay = self.connection_attempt_delay();
         if self
-            .connection_attempts
-            .iter()
-            .filter(|a| a.state == ConnectionState::InProgress)
+            .racing_attempts_in_progress()
             .any(|a| a.within_delay(now, connection_attempt_delay))
         {
             return None;
@@ -1682,12 +1705,94 @@ impl HappyEyeballs {
             started: now,
             state: ConnectionState::InProgress,
             is_ech_retry: false,
+            optimistic: false,
         });
 
         Some(Output::AttemptConnection {
             id,
             endpoint,
             is_ech_retry: false,
+            optimistic: false,
+        })
+    }
+
+    /// In-progress attempts that pace the race, i.e. all but the optimistic
+    /// HTTP/3 attempt, which races alongside without delaying anything.
+    fn racing_attempts_in_progress(&self) -> impl Iterator<Item = &ConnectionAttempt> {
+        self.connection_attempts
+            .iter()
+            .filter(|a| a.state == ConnectionState::InProgress && !a.optimistic)
+    }
+
+    /// Emit the optimistic HTTP/3 attempt, if applicable and not yet made, once
+    /// the first regular attempt has started. See
+    /// [`NetworkConfig::optimistic_quic`].
+    fn optimistic_attempt(&mut self, now: Instant) -> Option<Output> {
+        if self.has_successful_connection()
+            || !self.connection_attempts.iter().any(|a| !a.optimistic)
+            || self.connection_attempts.iter().any(|a| a.optimistic)
+        {
+            return None;
+        }
+        let endpoint = self.optimistic_endpoint()?;
+
+        let id = self.id_generator.next_id();
+        self.connection_attempts.push(ConnectionAttempt {
+            id,
+            endpoint: endpoint.clone(),
+            started: now,
+            state: ConnectionState::InProgress,
+            is_ech_retry: false,
+            optimistic: true,
+        });
+
+        Some(Output::AttemptConnection {
+            id,
+            endpoint,
+            is_ech_retry: false,
+            optimistic: true,
+        })
+    }
+
+    /// The endpoint of the optimistic HTTP/3 attempt: the first origin address
+    /// of the preferred family (or of the other one, absent any), provided that
+    /// nothing signals HTTP/3 support, i.e. there are no alt-svc entries and the
+    /// origin's HTTPS query completed without any service information.
+    fn optimistic_endpoint(&self) -> Option<Endpoint> {
+        let config = &self.network_config;
+        if !config.optimistic_quic
+            || !config.http_versions.h3
+            || config.resolution != ResolutionMode::Ip
+            || !config.alt_svc.is_empty()
+        {
+            return None;
+        }
+        let Host::Domain(domain) = &self.host else {
+            return None;
+        };
+        let https_name = https_query_name(domain, self.port);
+        let https_completed = self.dns_queries.iter().any(|q| {
+            q.record_type == DnsRecordType::Https && q.target_name == https_name && q.is_completed()
+        });
+        if !https_completed || self.completed_service_infos().next().is_some() {
+            return None;
+        }
+
+        let prefer_v6 = config.prefer_v6();
+        let addrs: Vec<SocketAddr> = self
+            .origin_addrs()
+            .into_iter()
+            .map(|addr| addr.with_port(self.port))
+            .collect();
+        let address = addrs
+            .iter()
+            .find(|a| a.is_ipv6() == prefer_v6)
+            .or_else(|| addrs.first())?;
+
+        Some(Endpoint {
+            target: EndpointTarget::Address(*address),
+            http_version: ConnectionAttemptHttpVersions::H3,
+            ech_config: None,
         })
     }
 
@@ -1713,12 +1818,14 @@ impl HappyEyeballs {
             started: now,
             state: ConnectionState::InProgress,
             is_ech_retry: true,
+            optimistic: false,
         });
 
         Some(Output::AttemptConnection {
             id,
             endpoint,
             is_ech_retry: true,
+            optimistic: false,
         })
     }
 

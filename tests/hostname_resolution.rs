@@ -574,6 +574,7 @@ fn multiple_ips_per_record() {
                 ech_config: None,
             },
             is_ech_retry: false,
+            optimistic: false,
         },
         now,
     );

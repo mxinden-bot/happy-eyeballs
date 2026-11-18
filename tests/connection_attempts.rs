@@ -184,6 +184,7 @@ fn successful_connection_cancels_others() {
                 ech_config: None,
             },
             is_ech_retry: false,
+            optimistic: false,
         },
         now,
     );

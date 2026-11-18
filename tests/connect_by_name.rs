@@ -45,6 +45,7 @@ fn out_attempt_by_name(id: Id, http_version: ConnectionAttemptHttpVersions) -> O
             ech_config: None,
         },
         is_ech_retry: false,
+        optimistic: false,
     }
 }
 
@@ -168,6 +169,7 @@ fn by_name_attempts_alt_svc_by_name_over_h3() {
                 ech_config: None,
             },
             is_ech_retry: false,
+            optimistic: false,
         },
         now,
     );
