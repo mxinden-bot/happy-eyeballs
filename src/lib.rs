@@ -1737,6 +1737,10 @@ impl HappyEyeballs {
         let endpoint = self.optimistic_endpoint()?;
 
         let id = self.id_generator.next_id();
+        debug!(
+            "target={} optimistic HTTP/3 attempt {id:?} to {endpoint:?}",
+            self.host
+        );
         self.connection_attempts.push(ConnectionAttempt {
             id,
             endpoint: endpoint.clone(),
